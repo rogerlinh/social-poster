@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+*.tmp
+profile linkedin/
+profile medium/
+*.log

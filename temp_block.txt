@@ -1,0 +1,31 @@
+<p><strong>HTML</strong> (HyperText Markup Language) là ngôn ngữ đánh dấu được sử dụng để tạo cấu trúc cho trang web.</p>
+
+<p>Bạn có thể tìm hiểu thêm tại 
+<a href="https://developer.mozilla.org/vi/docs/Web/HTML">tài liệu MDN</a>.
+</p>
+
+<h2>Hình ảnh minh họa</h2>
+<figure>
+  <img src="https://via.placeholder.com/600x300" alt="Ảnh minh họa HTML cơ bản"/>
+  <figcaption>Ảnh minh họa cấu trúc HTML cơ bản.</figcaption>
+</figure>
+
+<h2>Danh sách các công nghệ web</h2>
+<ul>
+  <li><strong>HTML</strong>: Tạo khung nội dung</li>
+  <li><strong>CSS</strong>: Trang trí giao diện</li>
+  <li><strong>JavaScript</strong>: Tạo tương tác và hiệu ứng động</li>
+</ul>
+
+<h2>Đoạn mã ví dụ</h2>
+<pre><code>&lt;h1&gt;Xin chào thế giới!&lt;/h1&gt;
+&lt;p&gt;Đây là đoạn văn đầu tiên của bạn.&lt;/p&gt;
+</code></pre>
+
+<blockquote>
+  “Học HTML là bước đầu tiên để hiểu cách web hoạt động.”
+</blockquote>
+
+<hr/>
+
+<p><em>&copy; 2025 Bài viết minh họa. Được tạo bởi ChatGPT.</em></p>

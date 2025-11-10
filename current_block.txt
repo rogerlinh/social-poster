@@ -1,0 +1,99 @@
+def fill_title_and_body(driver: webdriver.Chrome, title: str, body: str):
+    _tlog("STEP:RESOLVE_CONTAINER locate section-inner")
+    _get_container(driver)
+
+    title_selectors = _as_selector_list(SEL_MEDIUM["title"])
+    if not title_selectors:
+        raise TimeoutException("No selectors configured for Medium title")
+
+    title_el = None
+    last_exc = None
+    for attempt in range(3):
+        title_el = _locate_by_selectors(driver, title_selectors)
+        if not title_el:
+            _sleep(0.05, 0.1)
+            continue
+        try:
+            active = _focus_element(driver, title_el)
+            if active is None:
+                continue
+            active.send_keys(Keys.CONTROL, "a")
+            active.send_keys(Keys.BACKSPACE)
+            active.send_keys(title or "Untitled")
+            _sleep(0.05, 0.12)
+            break
+        except StaleElementReferenceException as exc:
+            last_exc = exc
+            _sleep(0.05, 0.1)
+            title_el = None
+    else:
+        if last_exc:
+            raise last_exc
+        raise TimeoutException("Could not locate Medium title field.")
+
+    stripped = body or ""
+    html_used = False
+    if _looks_like_rich_html(body):
+        stripped = _html_to_plain_text(body)
+        html_used = True
+        _tlog("WARN:BODY_HTML_STRIPPED converting to plain text before typing")
+
+    body_selectors = _as_selector_list(SEL_MEDIUM["body_p"])
+    body_el = None
+    for attempt in range(3):
+        body_el = _locate_by_selectors(driver, body_selectors, exclude_ids=[title_el.id])
+        if not body_el:
+            _sleep(0.05, 0.1)
+            continue
+        active = _focus_element(driver, body_el)
+        if active is None:
+            body_el = None
+            continue
+        active.send_keys(Keys.CONTROL, "a")
+        active.send_keys(Keys.DELETE)
+        body_el = active
+        break
+    if body_el is None:
+        raise TimeoutException("Medium body paragraph not found")
+
+    if not stripped:
+        return
+
+    lines = stripped.splitlines()
+    if not lines:
+        return
+
+    for idx, line in enumerate(lines):
+        last_exc = None
+        for attempt in range(3):
+            target = _active_element(driver)
+            if target is None:
+                target = _locate_by_selectors(driver, body_selectors, exclude_ids=[title_el.id])
+                target = _focus_element(driver, target)
+            if target is None:
+                _sleep(0.05, 0.1)
+                continue
+            try:
+                if line:
+                    target.send_keys(line)
+                break
+            except StaleElementReferenceException as exc:
+                last_exc = exc
+                _sleep(0.05, 0.1)
+                target = None
+                continue
+        else:
+            if last_exc:
+                raise last_exc
+
+        if idx < len(lines) - 1:
+            target.send_keys(Keys.ENTER)
+            _sleep(0.08, 0.12)
+            body_el = _locate_by_selectors(driver, body_selectors, exclude_ids=[title_el.id])
+            target = _focus_element(driver, body_el)
+            if target is None:
+                raise TimeoutException("Unable to focus body paragraph after newline")
+            body_el = target
+
+    if html_used:
+        _tlog("INFO:BODY_TYPED_FROM_HTML fallback inserted plain text")

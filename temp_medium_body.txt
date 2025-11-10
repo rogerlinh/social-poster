@@ -1,0 +1,29 @@
+# Chào mừng bạn đến với bài viết HTML mẫu trên Medium
+
+HTML (HyperText Markup Language) là ngôn ngữ đánh dấu được sử dụng để tạo cấu trúc cho trang web.
+
+Bạn có thể tìm hiểu thêm tại
+tài liệu MDN.
+
+## Hình ảnh minh họa
+
+Ảnh minh họa cấu trúc HTML cơ bản.
+
+## Danh sách các công nghệ web
+
+- HTML: Tạo khung nội dung
+- CSS: Trang trí giao diện
+- JavaScript: Tạo tương tác và hiệu ứng động
+
+## Đoạn mã ví dụ
+
+```
+<h1>Xin chào thế giới!</h1>
+<p>Đây là đoạn văn đầu tiên của bạn.</p>
+```
+
+> “Học HTML là bước đầu tiên để hiểu cách web hoạt động.”
+
+---
+
+© 2025 Bài viết minh họa. Được tạo bởi ChatGPT.

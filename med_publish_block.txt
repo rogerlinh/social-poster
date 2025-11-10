@@ -1,0 +1,39 @@
+def medium_publish_article_selenium(
+    driver: webdriver.Chrome,
+    title: str,
+    content: str,
+    tags: Iterable[str] | None = None,
+    publish_now: bool = True,
+    retries: int = MEDIUM_SELENIUM_RETRIES,
+):
+    last_exc = None
+    attempts = retries + 1
+    for attempt in range(1, attempts + 1):
+        _tlog(f"STEP:ATTEMPT {attempt}/{attempts}")
+        try:
+            open_medium_editor(driver)
+            fill_title_and_body(driver, title, content)
+            open_publish_and_fill(driver, tags, publish_now)
+            _tlog("STEP:COMPLETE publishing flow finished")
+            return True
+        except Exception as e:
+            last_exc = e
+            try:
+                ts = time.strftime("%Y%m%d_%H%M%S")
+                driver.save_screenshot(f"medium_fail_{ts}.png")
+                _tlog(f"WARN:CAPTURE_SCREEN file=medium_fail_{ts}.png err={e.__class__.__name__}")
+            except Exception:
+                pass
+            if attempt < attempts:
+                try:
+                    driver.get("https://medium.com/new-story")
+                except Exception:
+                    pass
+                time.sleep(MEDIUM_RETRY_DELAY_S)
+                _tlog("INFO:RETRY_WAIT sleeping before retry")
+                continue
+            else:
+                break
+    if last_exc:
+        raise last_exc
+
