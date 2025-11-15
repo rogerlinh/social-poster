@@ -38,6 +38,7 @@ from tkinter import filedialog, messagebox, simpledialog
 
 from selenium.common.exceptions import TimeoutException, WebDriverException
 
+from console_utils import ensure_own_console
 try:
     from tkhtmlview import HTMLLabel  # type: ignore
 except Exception as exc:  # pragma: no cover - optional dependency
@@ -116,6 +117,7 @@ except Exception:
 CHROME_EXECUTABLE_PATH = Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
 MEDIUM_NEW_STORY_URL = "https://medium.com/new-story"
 MEDIUM_LOGIN_URL = "https://medium.com/m/signin"
+PROFILE_BASE_DIR = Path(r"D:\TOOL\social-poster\profiles")
 
 
 def threaded(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -156,11 +158,21 @@ class RunnerConfig:
 class Runner(threading.Thread):
     """Background worker responsible for publishing posts."""
 
-    def __init__(self, config: RunnerConfig, out_queue: queue.Queue, stop_evt: threading.Event):
+    def __init__(
+        self,
+        config: RunnerConfig,
+        out_queue: queue.Queue,
+        stop_evt: threading.Event,
+        open_console: bool = False,
+        console_title: str | None = None,
+    ):
         super().__init__(daemon=True)
         self.config = config
         self.out_queue = out_queue
         self.stop_evt = stop_evt
+        self.open_console = open_console
+        self.console_title = console_title or "Social Poster"
+        self._console_ready = False
 
     def _put(self, level: str, message: str) -> None:
         self.out_queue.put((level, message))
@@ -174,11 +186,27 @@ class Runner(threading.Thread):
     def error(self, message: str) -> None:
         self._put("error", message)
 
+    def _ensure_console(self) -> None:
+        if not self.open_console or self._console_ready:
+            return
+        try:
+            created = ensure_own_console(self.console_title, verbose=True)
+        except Exception as exc:
+            self.warn(f"Unable to open dedicated console window: {exc}")
+            self.open_console = False
+            return
+        if created:
+            self._console_ready = True
+        else:
+            self.warn("Request to open dedicated console window was ignored.")
+            self.open_console = False
+
     def run(self) -> None:  # pragma: no cover - integration path
         try:
             if self.config.platform == "Medium":
                 if not self.config.medium:
                     raise ValueError("Missing Medium configuration")
+                print("Starting Medium publish job...")
                 self._run_medium(self.config.medium)
             elif self.config.platform == "LinkedIn":
                 self.warn(
@@ -189,49 +217,75 @@ class Runner(threading.Thread):
                 self.warn(f"Unsupported platform: {self.config.platform}")
             self._put("finished", "Done")
         except Exception as exc:  # pylint: disable=broad-except
+            input("press Enter to continue... ")
             self.error(f"Failure: {exc}")
             self._put("finished", "Aborted")
 
 
-class AutoPostWindow(ctk.CTkToplevel):
-    def __init__(self, master):
+def run_job_inline(
+    config: RunnerConfig,
+    *,
+    open_console: bool = False,
+    console_title: str | None = None,
+) -> list[tuple[str, str]]:
+    """Utility for external callers (e.g., batch scheduler) to run a job inline."""
+
+    log_q: queue.Queue = queue.Queue()
+    stop_evt = threading.Event()
+    runner = Runner(
+        config,
+        log_q,
+        stop_evt,
+        open_console=open_console,
+        console_title=console_title,
+    )
+    runner.run()
+    events: list[tuple[str, str]] = []
+    while not log_q.empty():
+        events.append(log_q.get())
+    return events
+
+
+class AutoPostPanel(ctk.CTkFrame):
+    def __init__(self, master, path_var, limit_var, console_var):
         super().__init__(master)
-        self.title("Autopost Scheduler")
-        self.geometry("420x220")
-        self.resizable(False, False)
-        self.protocol("WM_DELETE_WINDOW", self._hide)
-        self.table_var = tk.StringVar(value=str(Path(SCHEDULE_TABLE_PATH).expanduser()))
-        self.limit_var = tk.IntVar(value=max(1, int(SCHEDULE_CONCURRENCY)))
-        self.console_var = tk.BooleanVar(value=bool(SCHEDULE_SHOW_CONSOLE))
+        self.table_var = path_var
+        self.limit_var = limit_var
+        self.console_var = console_var
         self._running = False
+        self.status_var = tk.StringVar(value="Load a CSV/XLSX schedule and press Run.")
         self._build_ui()
 
     def _build_ui(self):
-        pad = {"padx": 12, "pady": (10, 4)}
-        ctk.CTkLabel(self, text="Excel/CSV file").grid(row=0, column=0, sticky="w", **pad)
-        entry = ctk.CTkEntry(self, textvariable=self.table_var, width=260)
-        entry.grid(row=0, column=1, sticky="ew", pady=(10, 4))
+        self.columnconfigure(1, weight=1)
+        ctk.CTkLabel(self, text="Autopost Scheduler", anchor="w").grid(
+            row=0, column=0, columnspan=3, padx=12, pady=(12, 4), sticky="ew"
+        )
+        ctk.CTkLabel(self, text="Excel/CSV file").grid(row=1, column=0, padx=12, pady=(6, 4), sticky="w")
+        entry = ctk.CTkEntry(self, textvariable=self.table_var)
+        entry.grid(row=1, column=1, padx=(0, 8), pady=(6, 4), sticky="ew")
         ctk.CTkButton(self, text="Browse", command=self._choose_file).grid(
-            row=0, column=2, padx=10, pady=(10, 4)
+            row=1, column=2, padx=(0, 12), pady=(6, 4), sticky="ew"
         )
 
-        ctk.CTkLabel(self, text="Concurrency").grid(row=1, column=0, sticky="w", **pad)
-        spin = ctk.CTkEntry(self, textvariable=self.limit_var, width=80)
-        spin.grid(row=1, column=1, sticky="w", pady=(4, 4))
-
-        ctk.CTkCheckBox(self, text="Open new console per email", variable=self.console_var).grid(
-            row=2, column=0, columnspan=3, padx=12, pady=(6, 4), sticky="w"
+        ctk.CTkLabel(self, text="Concurrency").grid(row=2, column=0, padx=12, pady=4, sticky="w")
+        ctk.CTkEntry(self, textvariable=self.limit_var, width=80).grid(
+            row=2, column=1, padx=(0, 8), pady=4, sticky="w"
         )
+
+        self.console_checkbox = ctk.CTkCheckBox(
+            self,
+            text="Open new console per profile",
+            variable=self.console_var,
+        )
+        self.console_checkbox.grid(row=3, column=0, columnspan=3, padx=12, pady=(6, 4), sticky="w")
 
         self.run_btn = ctk.CTkButton(self, text="Run Schedule", command=self._start_schedule)
-        self.run_btn.grid(row=3, column=0, columnspan=3, padx=12, pady=(12, 10), sticky="ew")
+        self.run_btn.grid(row=4, column=0, columnspan=3, padx=12, pady=(10, 6), sticky="ew")
 
-    def _hide(self):
-        self.withdraw()
-
-    def show(self):
-        self.deiconify()
-        self.focus()
+        ctk.CTkLabel(self, textvariable=self.status_var, anchor="w", justify="left").grid(
+            row=5, column=0, columnspan=3, padx=12, pady=(0, 12), sticky="ew"
+        )
 
     def _choose_file(self):
         filename = filedialog.askopenfilename(
@@ -264,6 +318,7 @@ class AutoPostWindow(ctk.CTkToplevel):
             return
         show_console = bool(self.console_var.get())
         self._running = True
+        self.status_var.set("Running schedule...")
         self.run_btn.configure(state="disabled", text="Running...")
         threading.Thread(
             target=self._run_schedule,
@@ -274,12 +329,19 @@ class AutoPostWindow(ctk.CTkToplevel):
     def _run_schedule(self, table_path: Path, limit: int, show_console: bool):
         try:
             schedule_reader.main(table=table_path, limit=limit, show_console=show_console)
-            messagebox.showinfo("Autopost", "Schedule run completed.")
-        except Exception as exc:
-            messagebox.showerror("Autopost", f"Schedule run failed: {exc}")
-        finally:
-            self._running = False
-            self.run_btn.configure(state="normal", text="Run Schedule")
+        except Exception as exc:  # pylint: disable=broad-except
+            self.after(0, lambda: self._finish_schedule(False, str(exc)))
+        else:
+            self.after(0, lambda: self._finish_schedule(True, "Schedule run completed."))
+
+    def _finish_schedule(self, success: bool, message: str) -> None:
+        self._running = False
+        self.run_btn.configure(state="normal", text="Run Schedule")
+        self.status_var.set(message if success else f"Error: {message}")
+        if success:
+            messagebox.showinfo("Autopost", message)
+        else:
+            messagebox.showerror("Autopost", f"Schedule run failed: {message}")
 
     # --------------------------------------------------------------------- Medium
 
@@ -425,32 +487,51 @@ class App(ctk.CTk):
         self.preview_supports_html = HTMLLabel is not None
         self.preview_widget: Any | None = None
         self._preview_update_job: Optional[str] = None
-        self.mode_var = tk.StringVar(value="Manual")
         self.schedule_path_var = tk.StringVar(value=str(Path(SCHEDULE_TABLE_PATH).expanduser()))
         self.schedule_limit_var = tk.IntVar(value=max(1, int(SCHEDULE_CONCURRENCY)))
         self.schedule_console_var = tk.BooleanVar(value=bool(SCHEDULE_SHOW_CONSOLE))
-        self._schedule_running = False
+        self.profile_existing_box: ctk.CTkTextbox | None = None
+        self.profile_missing_box: ctk.CTkTextbox | None = None
+        self.profile_status_var = tk.StringVar(value="Load schedule to inspect profiles.")
 
         self._build_ui()
         self.log_box_write("info", "Ready. Fill in the details and press Publish.")
         self.after(200, self._poll_queue)
-        self.autopost_window: AutoPostWindow | None = None
-        if schedule_reader is not None:
-            self.autopost_window = AutoPostWindow(self)
-            self.autopost_window.lift()
 
     def _build_ui(self) -> None:
-        main = ctk.CTkFrame(self)
-        main.grid(row=0, column=0, sticky="nsew", padx=12, pady=12)
+        tabs = ctk.CTkTabview(self)
+        tabs.grid(row=0, column=0, sticky="nsew", padx=12, pady=12)
+        tabs.add("Profiles")
+        tabs.add("Poster")
+        tabs.set("Profiles")
+        self.tabs = tabs  # store for future toggles
+
+        profiles_tab = tabs.tab("Profiles")
+        poster_tab = tabs.tab("Poster")
+
+        self._build_profile_tab(profiles_tab)
+
+        main = ctk.CTkFrame(poster_tab)
+        main.grid(row=0, column=0, sticky="nsew")
         main.columnconfigure(0, weight=2)
         main.columnconfigure(1, weight=1)
-        main.rowconfigure(0, weight=1)
+        main.rowconfigure(1, weight=1)
 
-        form = ctk.CTkFrame(main)
-        form.grid(row=0, column=0, padx=(0, 8), pady=8, sticky="nsew")
-        form.columnconfigure(1, weight=1)
-        form.columnconfigure(2, weight=1)
-        form.rowconfigure(8, weight=1)
+        header = ctk.CTkFrame(main)
+        header.grid(row=0, column=0, columnspan=2, sticky="ew", padx=10, pady=(10, 0))
+        header.columnconfigure(0, weight=1)
+        ctk.CTkLabel(header, textvariable=self.mode_status_var).grid(
+            row=0, column=0, padx=4, pady=4, sticky="w"
+        )
+        self.mode_button = ctk.CTkButton(header, text="Enable auto", command=self.toggle_mode)
+        self.mode_button.grid(row=0, column=1, padx=4, pady=4, sticky="e")
+
+        self.manual_frame = ctk.CTkFrame(main)
+        self.manual_frame.grid(row=1, column=0, padx=(0, 8), pady=(8, 12), sticky="nsew")
+        self.manual_frame.columnconfigure(1, weight=1)
+        self.manual_frame.columnconfigure(2, weight=1)
+        self.manual_frame.rowconfigure(8, weight=1)
+        form = self.manual_frame
 
         # Platform selector
         ctk.CTkLabel(form, text="Platform").grid(row=0, column=0, padx=10, pady=(10, 4), sticky="w")
@@ -478,7 +559,7 @@ class App(ctk.CTk):
 
         actions = ctk.CTkFrame(form)
         actions.grid(row=7, column=0, columnspan=3, padx=10, pady=(0, 6), sticky="ew")
-        actions.columnconfigure((0, 1, 2), weight=1)
+        actions.columnconfigure((0, 1), weight=1)
 
         self.publish_button = ctk.CTkButton(
             actions,
@@ -498,15 +579,6 @@ class App(ctk.CTk):
             state="disabled",
         )
         self.cancel_button.grid(row=0, column=1, padx=4, pady=4, sticky="ew")
-
-        self.autopost_button = ctk.CTkButton(
-            actions,
-            text="Autopost Scheduler",
-            command=self.show_autopost_window,
-            fg_color="#455A64",
-            hover_color="#263238",
-        )
-        self.autopost_button.grid(row=0, column=2, padx=4, pady=4, sticky="ew")
 
         editor_container = ctk.CTkFrame(form)
         editor_container.grid(
@@ -548,9 +620,18 @@ class App(ctk.CTk):
             preview_box.configure(state="disabled")
             self.preview_widget = preview_box
 
+        self.autopost_frame = AutoPostPanel(
+            main,
+            path_var=self.schedule_path_var,
+            limit_var=self.schedule_limit_var,
+            console_var=self.schedule_console_var,
+        )
+        self.autopost_frame.grid(row=1, column=0, padx=(0, 8), pady=(8, 12), sticky="nsew")
+        self.autopost_frame.grid_remove()
+
         # Footer controls
         log_frame = ctk.CTkFrame(main)
-        log_frame.grid(row=0, column=1, padx=(8, 0), pady=8, sticky="nsew")
+        log_frame.grid(row=1, column=1, padx=(8, 0), pady=(8, 12), sticky="nsew")
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(1, weight=1)
 
@@ -560,6 +641,124 @@ class App(ctk.CTk):
         self.log_box = ctk.CTkTextbox(log_frame, state="disabled")
         self.log_box.grid(row=1, column=0, padx=10, pady=(0, 10), sticky="nsew")
 
+        self._update_mode_views()
+        self._refresh_profile_lists()
+
+    def toggle_mode(self) -> None:
+        current = self.mode_var.get()
+        if current == "Manual":
+            if schedule_reader is None:
+                messagebox.showerror("Autopost", "Batch scheduler module unavailable.")
+                return
+            self.mode_var.set("Auto")
+        else:
+            self.mode_var.set("Manual")
+        self._update_mode_views()
+
+    def _update_mode_views(self) -> None:
+        mode = self.mode_var.get()
+        if mode == "Auto":
+            self.manual_frame.grid_remove()
+            self.autopost_frame.grid()
+            self.mode_status_var.set("Mode: Autopost scheduler")
+            self.mode_button.configure(text="Back to editor")
+        else:
+            self.autopost_frame.grid_remove()
+            self.manual_frame.grid()
+            self.mode_status_var.set("Mode: Manual compose")
+            self.mode_button.configure(text="Enable auto")
+
+    def _build_profile_tab(self, container: ctk.CTkFrame) -> None:
+        container.columnconfigure((0, 1), weight=1)
+        container.rowconfigure(1, weight=1)
+        container.rowconfigure(2, weight=1)
+
+        info = ctk.CTkFrame(container)
+        info.grid(row=0, column=0, columnspan=2, sticky="ew", padx=10, pady=(10, 6))
+        info.columnconfigure(0, weight=1)
+        ctk.CTkLabel(info, text=f"Schedule file: {SCHEDULE_TABLE_PATH}").grid(
+            row=0, column=0, sticky="w", padx=6, pady=4
+        )
+        ctk.CTkLabel(info, text=f"Profile base folder: {PROFILE_BASE_DIR}").grid(
+            row=1, column=0, sticky="w", padx=6, pady=4
+        )
+        controls = ctk.CTkFrame(info)
+        controls.grid(row=0, column=1, rowspan=2, sticky="e", padx=6, pady=4)
+        ctk.CTkButton(controls, text="Refresh", command=self._refresh_profile_lists).pack(
+            side="top", fill="x", padx=4, pady=4
+        )
+        ctk.CTkLabel(info, textvariable=self.profile_status_var, anchor="w").grid(
+            row=2, column=0, columnspan=2, sticky="w", padx=6, pady=(4, 0)
+        )
+
+        existing_frame = ctk.CTkFrame(container)
+        existing_frame.grid(row=1, column=0, sticky="nsew", padx=(10, 5), pady=(0, 10))
+        existing_frame.columnconfigure(0, weight=1)
+        existing_frame.rowconfigure(1, weight=1)
+        ctk.CTkLabel(existing_frame, text="Profiles found").grid(
+            row=0, column=0, sticky="w", padx=8, pady=(8, 4)
+        )
+        self.profile_existing_box = ctk.CTkTextbox(existing_frame, state="disabled")
+        self.profile_existing_box.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
+
+        missing_frame = ctk.CTkFrame(container)
+        missing_frame.grid(row=1, column=1, sticky="nsew", padx=(5, 10), pady=(0, 10))
+        missing_frame.columnconfigure(0, weight=1)
+        missing_frame.rowconfigure(1, weight=1)
+        ctk.CTkLabel(missing_frame, text="Profiles missing").grid(
+            row=0, column=0, sticky="w", padx=8, pady=(8, 4)
+        )
+        self.profile_missing_box = ctk.CTkTextbox(missing_frame, state="disabled")
+        self.profile_missing_box.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
+
+    def _refresh_profile_lists(self) -> None:
+        existing, missing, message = self._load_schedule_profiles()
+        self.profile_status_var.set(message)
+        self._write_profile_box(self.profile_existing_box, existing, empty_message="No matching profiles found.")
+        self._write_profile_box(
+            self.profile_missing_box,
+            missing,
+            empty_message="All profiles exist.",
+        )
+
+    def _write_profile_box(
+        self,
+        widget: ctk.CTkTextbox | None,
+        lines: list[str],
+        empty_message: str,
+    ) -> None:
+        if widget is None:
+            return
+        widget.configure(state="normal")
+        widget.delete("1.0", "end")
+        content = "\n".join(lines) if lines else empty_message
+        widget.insert("1.0", content)
+        widget.configure(state="disabled")
+
+    def _load_schedule_profiles(self) -> tuple[list[str], list[str], str]:
+        if schedule_reader is None:
+            return [], [], "Batch scheduler module unavailable."
+        try:
+            columns = schedule_reader.read_schedule(Path(SCHEDULE_TABLE_PATH))
+        except Exception as exc:
+            return [], [], f"Failed to read schedule: {exc}"
+        values = columns.get("profile") or columns.get("profile_path") or []
+        profiles = sorted({(value or "").strip() for value in values if (value or "").strip()})
+        base = PROFILE_BASE_DIR.expanduser()
+        existing: list[str] = []
+        missing: list[str] = []
+        for name in profiles:
+            target = (base / name).expanduser()
+            display = f"{name} -> {target}"
+            if target.exists():
+                existing.append(display)
+            else:
+                missing.append(display)
+        if not profiles:
+            message = "No profiles found in schedule."
+        else:
+            message = f"{len(existing)} profile(s) exist, {len(missing)} missing."
+        return existing, missing, message
     def _build_medium_section(self, frame: ctk.CTkFrame) -> None:
         ctk.CTkLabel(frame, text="Chrome profile folder").grid(
             row=0, column=0, padx=10, pady=6, sticky="w"
@@ -821,12 +1020,6 @@ class App(ctk.CTk):
         self.is_running = False
         self.publish_button.configure(state="normal")
         self.cancel_button.configure(state="disabled")
-
-    def show_autopost_window(self) -> None:
-        if self.autopost_window is None:
-            messagebox.showerror("Autopost", "Batch scheduler module unavailable.")
-            return
-        self.autopost_window.show()
 
     def _build_runner_config(self, platform: str) -> RunnerConfig:
         if platform == "Medium":
