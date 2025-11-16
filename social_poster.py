@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import inspect
 import os
 import re
 import queue
@@ -39,6 +40,7 @@ from tkinter import filedialog, messagebox, simpledialog
 from selenium.common.exceptions import TimeoutException, WebDriverException
 
 from console_utils import ensure_own_console
+from openWeb import launch_profile_browser, open_debug_then_restart_with_selenium
 try:
     from tkhtmlview import HTMLLabel  # type: ignore
 except Exception as exc:  # pragma: no cover - optional dependency
@@ -109,6 +111,17 @@ from config import (
     SCHEDULE_SHOW_CONSOLE,
 )
 
+def _log(message: str) -> None:
+    caller = inspect.currentframe().f_back  # type: ignore[assignment]
+    line = caller.f_lineno if caller else -1
+    pid = os.getpid()
+    formatted = f"[pid {pid:>6}] [line {line:04d}] {message}"
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        sys.stdout.buffer.write((formatted + "\n").encode(encoding, errors="replace"))
+        sys.stdout.flush()
+    except Exception:
+        print(formatted)
 try:
     import schedule_reader
 except Exception:
@@ -147,6 +160,8 @@ class MediumJobConfig:
     publish_now: bool = True
     profile_name: str = CHROME_PROFILE_DIR or "Default"
     manual_login_timeout: int = 180  # seconds
+    schedule_table: str | None = None
+    schedule_row: int = 0
 
 
 @dataclass
@@ -208,6 +223,7 @@ class Runner(threading.Thread):
                     raise ValueError("Missing Medium configuration")
                 print("Starting Medium publish job...")
                 self._run_medium(self.config.medium)
+                # input("Press Enter to close this console window...")
             elif self.config.platform == "LinkedIn":
                 self.warn(
                     "LinkedIn automation has not been reconstructed yet. "
@@ -217,9 +233,145 @@ class Runner(threading.Thread):
                 self.warn(f"Unsupported platform: {self.config.platform}")
             self._put("finished", "Done")
         except Exception as exc:  # pylint: disable=broad-except
-            input("press Enter to continue... ")
             self.error(f"Failure: {exc}")
+            print("eXCEPTION in runner:", exc)
+            # input("Press Enter to close this console window...")
             self._put("finished", "Aborted")
+
+    def _run_medium(self, cfg: MediumJobConfig) -> None:
+        if medium_selenium_import_err is not None:
+            raise RuntimeError(f"Cannot import medium_selenium: {medium_selenium_import_err}")
+
+        if MEDIUM_DRIVER.lower() != "selenium":
+            raise RuntimeError(
+                f"MEDIUM_DRIVER={MEDIUM_DRIVER} is not supported by this rebuilt tool. "
+                "Only 'selenium' is currently implemented."
+            )
+
+        if cfg.headless:
+            self.warn(
+                "Headless flag requested but Selenium profile launcher does not currently "
+                "support headless mode. Proceeding with visible browser window."
+            )
+
+        profile_path = Path(cfg.profile_path or "").expanduser()
+        if not profile_path.exists():
+            raise FileNotFoundError(
+                f"Chrome profile folder does not exist: {profile_path}. "
+                "Open the profile via the Profiles tab before running."
+            )
+
+        profile_dir = cfg.profile_name or "Default"
+        profile_dir_path = profile_path / profile_dir
+        if not profile_dir_path.exists():
+            raise FileNotFoundError(
+                f"Chrome profile '{profile_dir}' missing under {profile_path}. "
+                "Open the profile via the Profiles tab before running."
+            )
+
+        self.log("Launching Chrome with Medium profile...")
+        driver = open_debug_then_restart_with_selenium(
+            user_data_dir=str(profile_path),
+            profile_name=profile_dir,
+            chrome_path=str(CHROME_EXECUTABLE_PATH),
+        )
+
+        try:
+            self.log(f"Driver ready. keep_browser_open={fmt_bool(cfg.keep_browser_open)}")
+            if self.stop_evt.is_set():
+                self.warn("Stop requested before navigation.")
+                return
+
+            if cfg.manual_login:
+                self._handle_manual_login(driver, cfg)
+                if self.stop_evt.is_set():
+                    return
+
+            self.log("Opening Medium new-story page...")
+            try:
+                medium_load_page(driver, MEDIUM_NEW_STORY_URL, attempts=3)
+            except TimeoutException:
+                self.error("Medium refused the connection (ERR_CONNECTION_REFUSED) after three automatic retries.")
+                raise
+            except WebDriverException as exc:
+                if "ERR_CONNECTION_REFUSED" in str(exc):
+                    self.error("Chrome reported ERR_CONNECTION_REFUSED when opening Medium. Check your connection or VPN and try again.")
+                raise
+            time.sleep(2)
+            self.log(
+                "When the editor loads, type the story title manually in Chrome. "
+                "The automation will continue once the Publish button is enabled."
+            )
+
+            tags = cfg.tags[:5]
+            self.log(
+                f"Publishing Medium article | title='{cfg.title[:40]}' | "
+                f"tags={tags if tags else '(none)'}"
+            )
+            print(
+                f"Publishing Medium article | title='{cfg.title[:40]}' | "
+                f"tags={tags if tags else '(none)'}"
+            )
+            publish_url = medium_publish_article_selenium(
+                driver=driver,
+                title=cfg.title,
+                content=cfg.content,
+                tags=tags,
+                publish_now=cfg.publish_now,
+            )
+            print(f"Published URL: {publish_url}")
+            if publish_url:
+                self.log(f"Medium publish workflow completed. URL: {publish_url}")
+                self._put("success", f"Medium URL: {publish_url}")
+                self._persist_publish_link(cfg, publish_url)
+            else:
+                self.log("Medium publish workflow is not completed.")
+        finally:
+            if driver is not None:
+                self.log("Closing browser window.")
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+
+    def _handle_manual_login(self, driver, cfg: MediumJobConfig) -> None:
+        self.log("Manual login requested. Opening Medium login page.")
+        driver.get(MEDIUM_LOGIN_URL)
+        self.log(
+            "Please authenticate in Chrome. The automation waits until you close this prompt "
+            "or the timeout passes."
+        )
+        timeout = max(30, cfg.manual_login_timeout)
+        start_ts = time.monotonic()
+
+        def finished() -> bool:
+            try:
+                url = driver.current_url
+            except Exception:
+                return False
+            return url.startswith(MEDIUM_NEW_STORY_URL)
+
+        while not self.stop_evt.is_set():
+            if finished():
+                self.log("Detected Medium editor. Proceeding with publish flow.")
+                return
+            if (time.monotonic() - start_ts) > timeout:
+                self.warn(
+                    f"Manual login timeout ({timeout}s) reached. Continuing with automation."
+                )
+                return
+            time.sleep(1.0)
+
+    def _persist_publish_link(self, cfg: MediumJobConfig, url: str) -> None:
+        if not cfg.schedule_table or not cfg.schedule_row:
+            return
+        if schedule_reader is None or not hasattr(schedule_reader, "write_link_to_schedule"):
+            return
+        try:
+            schedule_reader.write_link_to_schedule(Path(cfg.schedule_table), cfg.schedule_row, url)
+            self.log(f"Updated schedule link row={cfg.schedule_row}")
+        except Exception as exc:
+            self.warn(f"Failed to update schedule link row={cfg.schedule_row}: {exc}")
 
 
 def run_job_inline(
@@ -345,120 +497,6 @@ class AutoPostPanel(ctk.CTkFrame):
 
     # --------------------------------------------------------------------- Medium
 
-    def _run_medium(self, cfg: MediumJobConfig) -> None:
-        if medium_selenium_import_err is not None:
-            raise RuntimeError(f"Cannot import medium_selenium: {medium_selenium_import_err}")
-
-        if medium_start_profile is None:
-            raise RuntimeError("medium_start_profile unavailable")
-
-        if MEDIUM_DRIVER.lower() != "selenium":
-            raise RuntimeError(
-                f"MEDIUM_DRIVER={MEDIUM_DRIVER} is not supported by this rebuilt tool. "
-                "Only 'selenium' is currently implemented."
-            )
-
-        if cfg.headless:
-            self.warn(
-                "Headless flag requested but Selenium profile launcher does not currently "
-                "support headless mode. Proceeding with visible browser window."
-            )
-
-        profile_path = Path(cfg.profile_path).expanduser()
-        if not profile_path.exists():
-            self.log(f"Creating profile directory: {profile_path}")
-            profile_path.mkdir(parents=True, exist_ok=True)
-
-        self.log("Launching Chrome with Medium profile...")
-        driver = medium_start_profile(
-            user_data_dir=str(profile_path),
-            profile_dir=cfg.profile_name or "Default",
-        )
-
-        try:
-            self.log(f"Driver ready. keep_browser_open={fmt_bool(cfg.keep_browser_open)}")
-            if self.stop_evt.is_set():
-                self.warn("Stop requested before navigation.")
-                return
-
-            if cfg.manual_login:
-                self._handle_manual_login(driver, cfg)
-                if self.stop_evt.is_set():
-                    return
-
-            self.log("Opening Medium new-story page...")
-            try:
-                medium_load_page(driver, MEDIUM_NEW_STORY_URL, attempts=3)
-            except TimeoutException:
-                self.error("Medium refused the connection (ERR_CONNECTION_REFUSED) after three automatic retries.")
-                raise
-            except WebDriverException as exc:
-                if "ERR_CONNECTION_REFUSED" in str(exc):
-                    self.error("Chrome reported ERR_CONNECTION_REFUSED when opening Medium. Check your connection or VPN and try again.")
-                raise
-            time.sleep(2)
-            self.log(
-                "When the editor loads, type the story title manually in Chrome. "
-                "The automation will continue once the Publish button is enabled."
-            )
-
-            tags = cfg.tags[:5]
-            self.log(
-                f"Publishing Medium article | title='{cfg.title[:40]}' | "
-                f"tags={tags if tags else '(none)'}"
-            )
-            print(f"Publishing Medium article | title='{cfg.title[:40]}' | "
-                f"tags={tags if tags else '(none)'}")
-            publish_url = medium_publish_article_selenium(
-                driver=driver,
-                title=cfg.title,
-                content=cfg.content,
-                tags=tags,
-                publish_now=cfg.publish_now,
-            )
-            print(f"Published URL: {publish_url}")
-            if publish_url:
-                self.log(f"Medium publish workflow completed. URL: {publish_url}")
-                self._put('success', f"Medium URL: {publish_url}")
-            else:
-                self.log("Medium publish workflow completed.")
-        finally:
-            if not cfg.keep_browser_open:
-                self.log("Closing browser window.")
-                try:
-                    driver.quit()
-                except Exception:
-                    pass
-
-    def _handle_manual_login(self, driver, cfg: MediumJobConfig) -> None:
-        self.log("Manual login requested. Opening Medium login page.")
-        driver.get(MEDIUM_LOGIN_URL)
-        self.log(
-            "Please authenticate in Chrome. The automation waits until you close this prompt "
-            "or the timeout passes."
-        )
-        timeout = max(30, cfg.manual_login_timeout)
-        start_ts = time.monotonic()
-
-        def finished() -> bool:
-            try:
-                url = driver.current_url
-            except Exception:
-                return False
-            return url.startswith(MEDIUM_NEW_STORY_URL)
-
-        while not self.stop_evt.is_set():
-            if finished():
-                self.log("Detected Medium editor. Proceeding with publish flow.")
-                return
-            if (time.monotonic() - start_ts) > timeout:
-                self.warn(
-                    f"Manual login timeout ({timeout}s) reached. Continuing with automation."
-                )
-                return
-            time.sleep(1.0)
-
-
 # ---------------------------------------------------------------------- GUI Layer
 
 class App(ctk.CTk):
@@ -490,8 +528,8 @@ class App(ctk.CTk):
         self.schedule_path_var = tk.StringVar(value=str(Path(SCHEDULE_TABLE_PATH).expanduser()))
         self.schedule_limit_var = tk.IntVar(value=max(1, int(SCHEDULE_CONCURRENCY)))
         self.schedule_console_var = tk.BooleanVar(value=bool(SCHEDULE_SHOW_CONSOLE))
-        self.profile_existing_box: ctk.CTkTextbox | None = None
-        self.profile_missing_box: ctk.CTkTextbox | None = None
+        self.profile_existing_frame: ctk.CTkScrollableFrame | None = None
+        self.profile_missing_frame: ctk.CTkScrollableFrame | None = None
         self.profile_status_var = tk.StringVar(value="Load schedule to inspect profiles.")
 
         self._build_ui()
@@ -501,39 +539,32 @@ class App(ctk.CTk):
     def _build_ui(self) -> None:
         tabs = ctk.CTkTabview(self)
         tabs.grid(row=0, column=0, sticky="nsew", padx=12, pady=12)
-        tabs.add("Profiles")
-        tabs.add("Poster")
+        for name in ("Profiles", "Autopost", "Manual"):
+            tabs.add(name)
         tabs.set("Profiles")
-        self.tabs = tabs  # store for future toggles
+        self.tabs = tabs
 
         profiles_tab = tabs.tab("Profiles")
-        poster_tab = tabs.tab("Poster")
+        manual_tab = tabs.tab("Manual")
+        autopost_tab = tabs.tab("Autopost")
 
         self._build_profile_tab(profiles_tab)
+        self._build_manual_tab(manual_tab)
+        self._build_autopost_tab(autopost_tab)
+        self._refresh_profile_lists()
 
-        main = ctk.CTkFrame(poster_tab)
-        main.grid(row=0, column=0, sticky="nsew")
-        main.columnconfigure(0, weight=2)
-        main.columnconfigure(1, weight=1)
-        main.rowconfigure(1, weight=1)
+    def _build_manual_tab(self, container: ctk.CTkFrame) -> None:
+        container.columnconfigure(0, weight=2)
+        container.columnconfigure(1, weight=1)
+        container.rowconfigure(0, weight=1)
 
-        header = ctk.CTkFrame(main)
-        header.grid(row=0, column=0, columnspan=2, sticky="ew", padx=10, pady=(10, 0))
-        header.columnconfigure(0, weight=1)
-        ctk.CTkLabel(header, textvariable=self.mode_status_var).grid(
-            row=0, column=0, padx=4, pady=4, sticky="w"
-        )
-        self.mode_button = ctk.CTkButton(header, text="Enable auto", command=self.toggle_mode)
-        self.mode_button.grid(row=0, column=1, padx=4, pady=4, sticky="e")
-
-        self.manual_frame = ctk.CTkFrame(main)
-        self.manual_frame.grid(row=1, column=0, padx=(0, 8), pady=(8, 12), sticky="nsew")
+        self.manual_frame = ctk.CTkFrame(container)
+        self.manual_frame.grid(row=0, column=0, padx=(0, 8), pady=(8, 12), sticky="nsew")
         self.manual_frame.columnconfigure(1, weight=1)
         self.manual_frame.columnconfigure(2, weight=1)
         self.manual_frame.rowconfigure(8, weight=1)
         form = self.manual_frame
 
-        # Platform selector
         ctk.CTkLabel(form, text="Platform").grid(row=0, column=0, padx=10, pady=(10, 4), sticky="w")
         platform_btn = ctk.CTkSegmentedButton(
             form,
@@ -543,14 +574,12 @@ class App(ctk.CTk):
         )
         platform_btn.grid(row=0, column=1, columnspan=2, padx=10, pady=(10, 4), sticky="ew")
 
-        # Medium specific inputs
         self.medium_section = ctk.CTkFrame(form)
         self.medium_section.grid(row=1, column=0, columnspan=3, sticky="nsew", padx=0, pady=(4, 4))
         self.medium_section.columnconfigure(1, weight=1)
         self.medium_section.columnconfigure(2, weight=1)
         self._build_medium_section(self.medium_section)
 
-        # Content editor
         ctk.CTkLabel(form, text="Content").grid(row=6, column=0, padx=10, pady=(10, 4), sticky="w")
         toolbar = ctk.CTkFrame(form)
         toolbar.grid(row=6, column=1, columnspan=2, padx=10, pady=(10, 4), sticky="ew")
@@ -620,18 +649,8 @@ class App(ctk.CTk):
             preview_box.configure(state="disabled")
             self.preview_widget = preview_box
 
-        self.autopost_frame = AutoPostPanel(
-            main,
-            path_var=self.schedule_path_var,
-            limit_var=self.schedule_limit_var,
-            console_var=self.schedule_console_var,
-        )
-        self.autopost_frame.grid(row=1, column=0, padx=(0, 8), pady=(8, 12), sticky="nsew")
-        self.autopost_frame.grid_remove()
-
-        # Footer controls
-        log_frame = ctk.CTkFrame(main)
-        log_frame.grid(row=1, column=1, padx=(8, 0), pady=(8, 12), sticky="nsew")
+        log_frame = ctk.CTkFrame(container)
+        log_frame.grid(row=0, column=1, padx=(8, 0), pady=(8, 12), sticky="nsew")
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(1, weight=1)
 
@@ -641,32 +660,16 @@ class App(ctk.CTk):
         self.log_box = ctk.CTkTextbox(log_frame, state="disabled")
         self.log_box.grid(row=1, column=0, padx=10, pady=(0, 10), sticky="nsew")
 
-        self._update_mode_views()
-        self._refresh_profile_lists()
-
-    def toggle_mode(self) -> None:
-        current = self.mode_var.get()
-        if current == "Manual":
-            if schedule_reader is None:
-                messagebox.showerror("Autopost", "Batch scheduler module unavailable.")
-                return
-            self.mode_var.set("Auto")
-        else:
-            self.mode_var.set("Manual")
-        self._update_mode_views()
-
-    def _update_mode_views(self) -> None:
-        mode = self.mode_var.get()
-        if mode == "Auto":
-            self.manual_frame.grid_remove()
-            self.autopost_frame.grid()
-            self.mode_status_var.set("Mode: Autopost scheduler")
-            self.mode_button.configure(text="Back to editor")
-        else:
-            self.autopost_frame.grid_remove()
-            self.manual_frame.grid()
-            self.mode_status_var.set("Mode: Manual compose")
-            self.mode_button.configure(text="Enable auto")
+    def _build_autopost_tab(self, container: ctk.CTkFrame) -> None:
+        container.columnconfigure(0, weight=1)
+        container.rowconfigure(0, weight=1)
+        self.autopost_frame = AutoPostPanel(
+            container,
+            path_var=self.schedule_path_var,
+            limit_var=self.schedule_limit_var,
+            console_var=self.schedule_console_var,
+        )
+        self.autopost_frame.grid(row=0, column=0, padx=20, pady=20, sticky="nsew")
 
     def _build_profile_tab(self, container: ctk.CTkFrame) -> None:
         container.columnconfigure((0, 1), weight=1)
@@ -698,8 +701,8 @@ class App(ctk.CTk):
         ctk.CTkLabel(existing_frame, text="Profiles found").grid(
             row=0, column=0, sticky="w", padx=8, pady=(8, 4)
         )
-        self.profile_existing_box = ctk.CTkTextbox(existing_frame, state="disabled")
-        self.profile_existing_box.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
+        self.profile_existing_frame = ctk.CTkScrollableFrame(existing_frame)
+        self.profile_existing_frame.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
 
         missing_frame = ctk.CTkFrame(container)
         missing_frame.grid(row=1, column=1, sticky="nsew", padx=(5, 10), pady=(0, 10))
@@ -708,34 +711,45 @@ class App(ctk.CTk):
         ctk.CTkLabel(missing_frame, text="Profiles missing").grid(
             row=0, column=0, sticky="w", padx=8, pady=(8, 4)
         )
-        self.profile_missing_box = ctk.CTkTextbox(missing_frame, state="disabled")
-        self.profile_missing_box.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
+        self.profile_missing_frame = ctk.CTkScrollableFrame(missing_frame)
+        self.profile_missing_frame.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
 
     def _refresh_profile_lists(self) -> None:
         existing, missing, message = self._load_schedule_profiles()
         self.profile_status_var.set(message)
-        self._write_profile_box(self.profile_existing_box, existing, empty_message="No matching profiles found.")
-        self._write_profile_box(
-            self.profile_missing_box,
+        self._populate_profile_list(
+            self.profile_existing_frame,
+            existing,
+            empty_message="No matching profiles found.",
+        )
+        self._populate_profile_list(
+            self.profile_missing_frame,
             missing,
             empty_message="All profiles exist.",
         )
 
-    def _write_profile_box(
+    def _populate_profile_list(
         self,
-        widget: ctk.CTkTextbox | None,
-        lines: list[str],
+        frame: ctk.CTkScrollableFrame | None,
+        profiles: list[tuple[str, Path]],
         empty_message: str,
     ) -> None:
-        if widget is None:
+        if frame is None:
             return
-        widget.configure(state="normal")
-        widget.delete("1.0", "end")
-        content = "\n".join(lines) if lines else empty_message
-        widget.insert("1.0", content)
-        widget.configure(state="disabled")
+        for child in frame.winfo_children():
+            child.destroy()
+        if not profiles:
+            ctk.CTkLabel(frame, text=empty_message, anchor="w").pack(fill="x", padx=4, pady=4)
+            return
+        for display, path in profiles:
+            ctk.CTkButton(
+                frame,
+                text=display,
+                anchor="w",
+                command=lambda p=path: self._open_profile_browser(p),
+            ).pack(fill="x", padx=4, pady=4)
 
-    def _load_schedule_profiles(self) -> tuple[list[str], list[str], str]:
+    def _load_schedule_profiles(self) -> tuple[list[tuple[str, Path]], list[tuple[str, Path]], str]:
         if schedule_reader is None:
             return [], [], "Batch scheduler module unavailable."
         try:
@@ -745,20 +759,27 @@ class App(ctk.CTk):
         values = columns.get("profile") or columns.get("profile_path") or []
         profiles = sorted({(value or "").strip() for value in values if (value or "").strip()})
         base = PROFILE_BASE_DIR.expanduser()
-        existing: list[str] = []
-        missing: list[str] = []
+        existing: list[tuple[str, Path]] = []
+        missing: list[tuple[str, Path]] = []
         for name in profiles:
             target = (base / name).expanduser()
             display = f"{name} -> {target}"
             if target.exists():
-                existing.append(display)
+                existing.append((display, target))
             else:
-                missing.append(display)
+                missing.append((display, target))
         if not profiles:
             message = "No profiles found in schedule."
         else:
             message = f"{len(existing)} profile(s) exist, {len(missing)} missing."
         return existing, missing, message
+
+    def _open_profile_browser(self, path: Path) -> None:
+        try:
+            launch_profile_browser(str(path), str(CHROME_EXECUTABLE_PATH))
+            self.profile_status_var.set(f"Launched Chrome for {path.name}.")
+        except Exception as exc:
+            messagebox.showerror("Profile Browser", f"Failed to open profile: {exc}")
     def _build_medium_section(self, frame: ctk.CTkFrame) -> None:
         ctk.CTkLabel(frame, text="Chrome profile folder").grid(
             row=0, column=0, padx=10, pady=6, sticky="w"

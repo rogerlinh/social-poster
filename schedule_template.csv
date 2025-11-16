@@ -1,4 +1,58 @@
-﻿platform,profile,type,title,content,images,schedule_time
-Medium,"
-labanpettis",,Đây là tiêu đề,Chào mừng,,13:36
-Medium,hanguyen,,Test 2,Xin chào các bạn,,13:40
+﻿platform,profile,type,title,content,images,schedule_time,date,link
+Medium,bloggiaidap,,Đây là tiêu đề,"<!-- Mẫu 2 -->
+<h2>Ý tưởng nội dung cho tuần này</h2>
+<p>Chọn một chủ đề chính và khai thác theo 3 góc độ: <strong>giải thích</strong>, <strong>case study</strong>, và <strong>thực hành</strong>. Định dạng gợi ý:</p>
+<ol>
+  <li><strong>Giải thích:</strong> nền tảng, khái niệm cơ bản.</li>
+  <li><strong>Case study:</strong> ví dụ thực tế làm nổi bật kết quả.</li>
+  <li><strong>Thực hành:</strong> checklist hoặc template để người đọc dùng ngay.</li>
+</ol>
+<p>Kết thúc bằng lời mời để lại bình luận hoặc chia sẻ trải nghiệm của họ.</p>",,9:40,16/11,
+Medium,hanguyen,,Test 2,"<!-- Mẫu 3 -->
+<h2>Mẫu email chào mừng</h2>
+<p>Xin chào <strong>Người dùng</strong>,</p>
+<p>Cảm ơn bạn đã đăng ký! Dưới đây là 3 bước nhanh để bắt đầu:</p>
+<ul>
+  <li>Hoàn tất hồ sơ trong 2 phút.</li>
+  <li>Khám phá <a href=""https://example.com/guide"" target=""_blank"" rel=""noopener"">hướng dẫn bắt đầu</a>.</li>
+  <li>Thử tính năng nổi bật trong 7 ngày miễn phí.</li>
+</ul>
+<blockquote>Chúng tôi luôn sẵn sàng hỗ trợ — phản hồi email này nếu bạn cần giúp.</blockquote>
+<p>Trân trọng,<br><strong>Đội ngũ Support</strong></p>",,9:42,16/11,
+Medium,bloggiaidap,,Đây là tiêu đề,"<!-- Mẫu 1 -->
+<h2>Hướng dẫn nhanh: Tối ưu time-on-page</h2>
+<p>Để tăng <strong>time-on-page</strong>, hãy bắt đầu bằng một mở bài ngắn gọn, theo sau là danh sách các điểm chính. Ví dụ: trình bày 3 lợi ích chính, mỗi lợi ích một đoạn ngắn, kèm ảnh minh họa và lời kêu gọi hành động (CTA) ở cuối.</p>
+<ul>
+  <li>Giữ đoạn văn ngắn (2–3 câu)</li>
+  <li>Dùng tiêu đề phụ để chia nội dung</li>
+  <li>Chèn media có liên quan để tăng tương tác</li>
+</ul>
+<p><em>Mẹo:</em> thử đặt câu hỏi ở đầu để kéo người đọc tiếp tục.</p>
+<h2>Mẫu email chào mừng</h2>
+<p>Xin chào <strong>Người dùng</strong>,</p>
+<p>Cảm ơn bạn đã đăng ký! Dưới đây là 3 bước nhanh để bắt đầu:</p>
+<ul>
+  <li>Hoàn tất hồ sơ trong 2 phút.</li>
+  <li>Khám phá <a href=""https://example.com/guide"" target=""_blank"" rel=""noopener"">hướng dẫn bắt đầu</a>.</li>
+  <li>Thử tính năng nổi bật trong 7 ngày miễn phí.</li>
+</ul>
+<blockquote>Chúng tôi luôn sẵn sàng hỗ trợ — phản hồi email này nếu bạn cần giúp.</blockquote>
+<p>Trân trọng,<br><strong>Đội ngũ Support</strong></p>",,9:44,16/11,
+Medium,hanguyen,,Test 2,"<!-- Mẫu 2 -->
+<h2>Ý tưởng nội dung cho tuần này</h2>
+<p>Chọn một chủ đề chính và khai thác theo 3 góc độ: <strong>giải thích</strong>, <strong>case study</strong>, và <strong>thực hành</strong>. Định dạng gợi ý:</p>
+<ol>
+  <li><strong>Giải thích:</strong> nền tảng, khái niệm cơ bản.</li>
+  <li><strong>Case study:</strong> ví dụ thực tế làm nổi bật kết quả.</li>
+  <li><strong>Thực hành:</strong> checklist hoặc template để người đọc dùng ngay.</li>
+</ol>
+<p>Kết thúc bằng lời mời để lại bình luận hoặc chia sẻ trải nghiệm của họ.</p>",,9:48,16/11,
+Medium,hanguyen,,Test 2,"<!-- Mẫu 2 -->
+<h2>Ý tưởng nội dung cho tuần này</h2>
+<p>Chọn một chủ đề chính và khai thác theo 3 góc độ: <strong>giải thích</strong>, <strong>case study</strong>, và <strong>thực hành</strong>. Định dạng gợi ý:</p>
+<ol>
+  <li><strong>Giải thích:</strong> nền tảng, khái niệm cơ bản.</li>
+  <li><strong>Case study:</strong> ví dụ thực tế làm nổi bật kết quả.</li>
+  <li><strong>Thực hành:</strong> checklist hoặc template để người đọc dùng ngay.</li>
+</ol>
+<p>Kết thúc bằng lời mời để lại bình luận hoặc chia sẻ trải nghiệm của họ.</p>",,9:40,17/11,

@@ -3,6 +3,9 @@ from __future__ import annotations
 import html
 import random
 import secrets
+import inspect
+import os
+import sys
 import re
 import time
 from html.parser import HTMLParser
@@ -427,7 +430,6 @@ def fill_title_and_body(driver: webdriver.Chrome, title: str, body: str):
             _click_optional_ok_button(driver)
     except Exception as e:
         _tlog(f"ERROR:BODY_TYPE exception {e}")
-
     # input("PAUSE after body filled, press any keys to continue...")
 
     
@@ -1086,7 +1088,7 @@ def _type_body_plain(
     if body_el is None:
         _tlog("ERROR:BODY_TYPE failed to acquire body element after retries")
         return False
-
+    
     clipboard_ok = False
     if _clipboard_copy_content(driver, text_blob, rich_html):
         clipboard_ok = _paste_from_clipboard_into_element(driver, body_el)
@@ -1094,41 +1096,41 @@ def _type_body_plain(
             _tlog("STEP:BODY_TYPE clipboard paste succeeded")
             return True
         _tlog("WARN:BODY_TYPE clipboard paste failed after copy")
+    return False
+    # debug_path = Path("temp_medium_body.txt")
+    # try:
+    #     debug_path.write_text(text_blob, encoding="utf-8")
+    #     _tlog(
+    #         f"INFO:BODY_TYPE saved_body_debug file={debug_path.name} lines={line_count} path={debug_path.resolve()}"
+    #     )
+    # except Exception as exc:
+    #     _tlog(f"WARN:BODY_TYPE save_debug_failed err={exc.__class__.__name__}")
 
-    debug_path = Path("temp_medium_body.txt")
-    try:
-        debug_path.write_text(text_blob, encoding="utf-8")
-        _tlog(
-            f"INFO:BODY_TYPE saved_body_debug file={debug_path.name} lines={line_count} path={debug_path.resolve()}"
-        )
-    except Exception as exc:
-        _tlog(f"WARN:BODY_TYPE save_debug_failed err={exc.__class__.__name__}")
+    # for attempt in range(1, 4):
+    #     try:
+    #         body_el.send_keys(text_blob)
+    #         break
+    #     except StaleElementReferenceException as stale_exc:
+    #         _tlog(
+    #             f"WARN:BODY_TYPE stale element during paste attempt={attempt} err={stale_exc.__class__.__name__}"
+    #         )
+    #     except Exception as type_exc:
+    #         _tlog(
+    #             f"ERROR:BODY_TYPE paste failed attempt={attempt} err={type_exc.__class__.__name__}"
+    #         )
+    #         raise
 
-    for attempt in range(1, 4):
-        try:
-            body_el.send_keys(text_blob)
-            break
-        except StaleElementReferenceException as stale_exc:
-            _tlog(
-                f"WARN:BODY_TYPE stale element during paste attempt={attempt} err={stale_exc.__class__.__name__}"
-            )
-        except Exception as type_exc:
-            _tlog(
-                f"ERROR:BODY_TYPE paste failed attempt={attempt} err={type_exc.__class__.__name__}"
-            )
-            raise
+    #     if attempt < 3:
+    #         body_el = _acquire_body_element(phase="reacquire")
+    #         if body_el is None:
+    #             _tlog(
+    #                 "ERROR:BODY_TYPE unable to reacquire body element during paste retry"
+    #             )
+    #             raise
+    #     else:
+    #         raise
 
-        if attempt < 3:
-            body_el = _acquire_body_element(phase="reacquire")
-            if body_el is None:
-                _tlog(
-                    "ERROR:BODY_TYPE unable to reacquire body element during paste retry"
-                )
-                raise
-        else:
-            raise
-
-    return True
+    # return True
 
 
 def _strip_tags(value: str) -> str:
@@ -2136,7 +2138,7 @@ def _extract_publish_link(driver: webdriver.Chrome):
             return None
 
 
-def _await_publish_url(driver: webdriver.Chrome, timeout: int = 45):
+def _await_publish_url(driver: webdriver.Chrome, timeout: int = 10):
     def _condition(drv):
         try:
             url = drv.current_url
@@ -2155,6 +2157,28 @@ def _await_publish_url(driver: webdriver.Chrome, timeout: int = 45):
     except TimeoutException:
         return _extract_publish_link(driver)
 
+
+def _detect_publish_quota_block(driver: webdriver.Chrome, timeout: float = 5.0) -> bool:
+    warning_text = (
+        "The author of this story has published or scheduled the maximum of three stories in the past 24 hours."
+    )
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            candidates = driver.find_elements(By.CSS_SELECTOR, "div.overlay-content")
+        except Exception:
+            candidates = []
+        for el in candidates:
+            try:
+                text = (el.text or "").strip()
+            except Exception:
+                continue
+            if warning_text.lower() in text.lower():
+                _tlog("ERROR:PUBLISH_LIMIT Medium báo đã đạt giới hạn 3 bài/24h")
+                return True
+        _sleep(0.2, 0.4)
+    _tlog("INFO:PUBLISH_LIMIT không thấy cảnh báo giới hạn publish")
+    return False
 
 
 def _wait_publish_ready(driver: webdriver.Chrome, timeout: int = 20, require_body: bool = True):
@@ -2236,6 +2260,47 @@ def _wait_publish_ready(driver: webdriver.Chrome, timeout: int = 20, require_bod
         return False
 
 
+def click_publish_confirm_button(driver: webdriver.Chrome) -> bool:
+    publish_xpath = (
+        "//button[contains(@class,'js-publishButton') and contains(@class,'button--primary') "
+        "and @data-action='publish' and .//span[contains(@class,'js-publishButtonText') "
+        "and (normalize-space()='Publish now' or normalize-space()='Publish')]]"
+    )
+    try:
+        button = WebDriverWait(driver, WAIT_MED).until(
+            lambda d: d.find_element(By.XPATH, publish_xpath)
+        )
+    except Exception:
+        _tlog("WARN:PUBLISH_CONFIRM không tìm thấy nút Publish now")
+        return False
+    try:
+        button.click()
+        _tlog("STEP:PUBLISH_CONFIRM click trực tiếp")
+        return True
+    except Exception:
+        pass
+    try:
+        driver.execute_script(
+            """
+            const btn = arguments[0];
+            if (!btn) return false;
+            btn.scrollIntoView({block:'center', inline:'center'});
+            const events = ['mouseover','mouseenter','mousemove','mousedown','mouseup','click'];
+            for (const evt of events) {
+                try {
+                    btn.dispatchEvent(new MouseEvent(evt, {bubbles:true, cancelable:true, view:window}));
+                } catch (err) {}
+            }
+            return true;
+            """,
+            button,
+        )
+        _tlog("STEP:PUBLISH_CONFIRM click bằng JavaScript")
+        return True
+    except Exception as exc:
+        _tlog(f"WARN:PUBLISH_CONFIRM click thất bại err={exc.__class__.__name__}")
+        return False
+
 def open_publish_and_fill(driver: webdriver.Chrome, tags: Iterable[str] | None, publish_now: bool = True):
     try:
         btn = wait_vis(driver, By.CSS_SELECTOR, SEL_MEDIUM["publish_btn"], t=WAIT_MED)
@@ -2249,126 +2314,6 @@ def open_publish_and_fill(driver: webdriver.Chrome, tags: Iterable[str] | None, 
         _tlog("INFO:TAGS_SKIP skipping tag input per updated automation")
 
     if publish_now:
-        publish_selectors = [
-            "button[data-testid='publishConfirmButton']",
-            "button[data-action='publish']",
-            "button.js-publishButton.is-touched[data-action='publish']",
-            "button.button--primary.button--filled[data-action='publish']",
-            "div[data-control-module-type] button[data-action='publish']",
-            "div[data-control-module-type] button.js-publishButton",
-            "div.overlay--white button[data-testid='publishConfirmButton']",
-        ]
-        publish_scopes = _publish_dialog_scopes(driver) or []
-
-        def _is_publish_confirm_button(el) -> bool:
-            if el is None:
-                return False
-            try:
-                if not el.is_displayed():
-                    return False
-            except StaleElementReferenceException:
-                return False
-            except Exception:
-                pass
-            try:
-                if not el.is_enabled():
-                    return False
-            except StaleElementReferenceException:
-                return False
-            except Exception:
-                pass
-            class_attr = (el.get_attribute("class") or "").lower()
-            data_action = (el.get_attribute("data-action") or "").strip().lower()
-            aria_disabled = (el.get_attribute("aria-disabled") or "").strip().lower()
-            disabled_attr = (el.get_attribute("disabled") or "").strip().lower()
-            text = (el.text or "").strip().lower()
-            if aria_disabled == "true" or disabled_attr in ("true", "disabled"):
-                return False
-            if "button--disabled" in class_attr or "button--disabledprimary" in class_attr:
-                return False
-            if "loading" in class_attr or "is-disabled" in class_attr:
-                return False
-            if data_action and data_action != "publish":
-                return False
-            if "publish" not in text:
-                return False
-            return True
-
-        def _describe_button(el) -> str:
-            try:
-                attrs = {
-                    "data-testid": el.get_attribute("data-testid"),
-                    "data-action": el.get_attribute("data-action"),
-                    "class": el.get_attribute("class"),
-                    "text": (el.text or "").strip(),
-                }
-                return ", ".join(f"{k}={v!r}" for k, v in attrs.items() if v)
-            except Exception:
-                return "<unavailable>"
-
-        def _locate_publish_button() -> Any:
-            scopes = _publish_dialog_scopes(driver) or publish_scopes or [None]
-            for scope in scopes:
-                scoped = [scope] if scope is not None else None
-                btn = _locate_by_selectors(driver, publish_selectors, scopes=scoped)
-                if btn and _is_publish_confirm_button(btn):
-                    return btn
-            try:
-                btn = driver.find_element(By.CSS_SELECTOR, publish_selectors[0])
-                if btn and _is_publish_confirm_button(btn):
-                    return btn
-            except Exception:
-                pass
-            try:
-                btn = driver.find_element(
-                    By.XPATH,
-                    "//button[normalize-space()='Publish now' or normalize-space()='Publish']",
-                )
-                if btn and _is_publish_confirm_button(btn):
-                    return btn
-            except Exception:
-                pass
-            return None
-
-        def _click_publish_button(button, attempt: int) -> bool:
-            desc = _describe_button(button)
-            try:
-                click_element_like_original(driver, button)
-                _tlog(f"STEP:CONFIRM_PUBLISH attempt={attempt} via primary click ({desc})")
-                return True
-            except Exception:
-                pass
-            try:
-                button.click()
-                _tlog(f"STEP:CONFIRM_PUBLISH attempt={attempt} via element.click ({desc})")
-                return True
-            except Exception:
-                pass
-            try:
-                driver.execute_script(
-                    """
-                    const btn = arguments[0];
-                    if (!btn) return false;
-                    btn.scrollIntoView({block: 'center', inline: 'center'});
-                    const events = ['mouseover','mouseenter','mousemove','mousedown','mouseup','click'];
-                    for (const evt of events) {
-                        try {
-                            btn.dispatchEvent(new MouseEvent(evt, {bubbles:true, cancelable:true, view:window}));
-                        } catch (err) {
-                            // ignore
-                        }
-                    }
-                    return true;
-                    """,
-                    button,
-                )
-                _tlog(f"STEP:CONFIRM_PUBLISH attempt={attempt} via JS dispatch ({desc})")
-                return True
-            except Exception as exc:
-                _tlog(
-                    f"WARN:PUBLISH_CLICK_FAILED attempt={attempt} err={exc.__class__.__name__} desc={desc}"
-                )
-                return False
 
         def _is_publish_dialog_open() -> bool:
             try:
@@ -2411,19 +2356,14 @@ def open_publish_and_fill(driver: webdriver.Chrome, tags: Iterable[str] | None, 
                     return True
                 _sleep(0.2, 0.4)
             return False
-
         def _click_publish_once(attempt: int, timeout: int) -> bool:
-            try:
-                button = WebDriverWait(driver, timeout).until(
-                    lambda d: _locate_publish_button()
-                )
-            except Exception:
-                _tlog(f"WARN:PUBLISH_BUTTON_NOT_FOUND attempt={attempt}")
-                return False
-            if not button:
-                _tlog(f"WARN:PUBLISH_BUTTON_NONE attempt={attempt}")
-                return False
-            return _click_publish_button(button, attempt)
+            end = time.time() + timeout
+            while time.time() < end:
+                if click_publish_confirm_button(driver):
+                    return True
+                _sleep(0.2, 0.4)
+            _tlog(f"WARN:PUBLISH_BUTTON_NOT_FOUND attempt={attempt}")
+            return False
 
         if _click_publish_once(1, WAIT_MED):
             if not _wait_publish_dialog_close(timeout=6.0):
@@ -2444,6 +2384,7 @@ def medium_publish_article_selenium(
     publish_now: bool = True,
     retries: int = MEDIUM_SELENIUM_RETRIES,
 ):
+    # input("STEP:COMPLETE publishing flow finished Press Enter to continue...")
     last_exc = None
     attempts = retries + 1
     for attempt in range(1, attempts + 1):
@@ -2453,37 +2394,31 @@ def medium_publish_article_selenium(
             fill_title_and_body(driver, title, content)
             _wait_publish_ready(driver)
             open_publish_and_fill(driver, tags, publish_now)
-            publish_url = _await_publish_url(driver)
+            click_publish_confirm_button(driver)
+            if _detect_publish_quota_block(driver):
+                raise RuntimeError("Medium publish quota exceeded (3 posts per 24 hours).")
+            publish_url = None
+            publish_url = _await_publish_url(driver, timeout=10)
             _tlog(f"STEP:COMPLETE publishing flow finished url={publish_url}")
+            input("STEP:COMPLETE publishing flow finished Press Enter to continue...")
             return publish_url
         except Exception as e:
             last_exc = e
-            try:
-                ts = time.strftime("%Y%m%d_%H%M%S")
-                driver.save_screenshot(f"medium_fail_{ts}.png")
-                _tlog(f"WARN:CAPTURE_SCREEN file=medium_fail_{ts}.png err={e.__class__.__name__}")
-            except Exception:
-                pass
-            if attempt < attempts:
-                try:
-                    driver.get("https://medium.com/new-story")
-                except Exception:
-                    pass
-                time.sleep(MEDIUM_RETRY_DELAY_S)
-                _tlog("INFO:RETRY_WAIT sleeping before retry")
-                continue
-            else:
-                break
-    if last_exc:
-        raise last_exc
+            _tlog(f"WARN:PUBLISH_ATTEMPT_FAILED attempt={attempt} err={e.__class__.__name__}")
+            raise e
     return None
 
-def _tlog(message: str):
+def _tlog(message: str) -> None:
+    caller = inspect.currentframe().f_back  # type: ignore[assignment]
+    line = caller.f_lineno if caller else -1
+    pid = os.getpid()
+    formatted = f"[pid {pid:>6}] [line {line:04d}] {message}"
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
     try:
-        ts = time.strftime("%H:%M:%S") + f".{int((time.time()%1)*1000):03d}"
-        print(f"[{ts}] [MediumSel] {message}")
+        sys.stdout.buffer.write((formatted + "\n").encode(encoding, errors="replace"))
+        sys.stdout.flush()
     except Exception:
-        pass
+        print(formatted)
 def _paste_from_clipboard_into_element(driver: webdriver.Chrome, element, ensure_click: bool = True) -> bool:
     if element is None:
         return False
@@ -2506,23 +2441,6 @@ def _paste_from_clipboard_into_element(driver: webdriver.Chrome, element, ensure
             except Exception:
                 return False
     _sleep(0.05, 0.1)
-    try:
-        element.send_keys(Keys.CONTROL, "a")
-    except Exception:
-        try:
-            actions = webdriver.ActionChains(driver)
-            actions.key_down(Keys.CONTROL).send_keys("a").key_up(Keys.CONTROL).perform()
-        except Exception:
-            pass
-    _sleep(0.03, 0.06)
-    try:
-        element.send_keys(Keys.BACKSPACE)
-    except Exception:
-        try:
-            webdriver.ActionChains(driver).send_keys(Keys.BACKSPACE).perform()
-        except Exception:
-            pass
-    _sleep(0.03, 0.06)
     try:
         actions = webdriver.ActionChains(driver)
         actions.key_down(Keys.CONTROL).send_keys("v").key_up(Keys.CONTROL).perform()

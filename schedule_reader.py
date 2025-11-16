@@ -100,17 +100,32 @@ def _normalize_field(value: Any) -> str:
 _MOJIBAKE_MARKERS = ("Ã", "Â", "Ð", "Ê", "¤", "�")
 
 
-def _parse_schedule_timestamp(value: str) -> datetime | None:
+def _parse_schedule_timestamp(value: str, date_hint: str | None = None) -> datetime | None:
     text = (value or "").strip()
     if not text:
         return None
     now = datetime.now()
+    date_obj: datetime | None = None
+    if date_hint:
+        for fmt in ("%d/%m", "%d-%m", "%d.%m"):
+            try:
+                parsed_date = datetime.strptime(date_hint.strip(), fmt)
+                date_obj = parsed_date.replace(year=now.year)
+                break
+            except ValueError:
+                continue
     for fmt in SCHEDULE_TIME_FORMATS:
         try:
             parsed = datetime.strptime(text, fmt)
         except ValueError:
             continue
-        if "%Y" not in fmt and "%y" not in fmt and "%m" not in fmt and "%d" not in fmt:
+        if date_obj:
+            parsed = parsed.replace(
+                year=date_obj.year,
+                month=date_obj.month,
+                day=date_obj.day,
+            )
+        elif "%Y" not in fmt and "%y" not in fmt and "%m" not in fmt and "%d" not in fmt:
             parsed = parsed.replace(year=now.year, month=now.month, day=now.day)
         return parsed
     return None
@@ -182,9 +197,12 @@ def read_schedule(path: Path = CSV_PATH) -> Dict[str, List[str]]:
         "content": [],
         "images": [],
         "schedule_time": [],
+        "schedule_date": [],
+        "link": [],
+        "__row_index": [],
     }
 
-    for row in raw_rows:
+    for idx, row in enumerate(raw_rows, start=1):
         for key in fields:
             if key == "profile":
                 value = (
@@ -193,21 +211,32 @@ def read_schedule(path: Path = CSV_PATH) -> Dict[str, List[str]]:
                     or row.get("email")
                     or ""
                 )
+            elif key == "schedule_date":
+                value = row.get("schedule_date") or row.get("date") or ""
+            elif key == "__row_index":
+                value = str(idx + 1)  # include header row
             else:
                 value = row.get(key, "")
             fields[key].append(_normalize_field(value))
 
     times_preview = ", ".join(_preview(t, 8) or "-" for t in fields["schedule_time"])
-    _log(f"INFO:SCHEDULE_TIMES {times_preview or '<none>'}")
+    dates_preview = ", ".join(_preview(d, 5) or "-" for d in fields["schedule_date"])
+    _log(f"INFO:SCHEDULE_TIMES {times_preview or '<none>'} | DATES {dates_preview or '<none>'}")
     return fields
 
 
 def build_jobs(columns: Dict[str, List[str]]) -> List["ScheduleJob"]:
+    _log("INFO:BUILD_JOBS_START")
     count = max((len(values) for values in columns.values()), default=0)
     jobs: List[ScheduleJob] = []
     for idx in range(count):
         data = {key: columns[key][idx] if idx < len(columns[key]) else "" for key in columns}
         if not any(data.values()):
+            continue
+        if _normalize_field(data.get("link", "")):
+            _log(
+                f"INFO:SKIP_JOB row={data.get('__row_index','?')} profile={data.get('profile','')} reason=link_present"
+            )
             continue
         jobs.append(ScheduleJob.from_dict(data))
     _log(f"INFO:BUILD_JOBS total={len(jobs)}")
@@ -227,6 +256,10 @@ class ScheduleJob:
     content: str
     images: str
     schedule_time: str
+    schedule_date: str
+    link: str
+    row_index: int
+    table_path: Path | None = None
 
     @classmethod
     def from_dict(cls, row: Dict[str, str]) -> "ScheduleJob":
@@ -238,6 +271,9 @@ class ScheduleJob:
             content=_normalize_field(row.get("content", "")),
             images=_normalize_field(row.get("images", "")),
             schedule_time=_normalize_field(row.get("schedule_time", "")),
+            schedule_date=_normalize_field(row.get("schedule_date", "")),
+            link=_normalize_field(row.get("link", "")),
+            row_index=int(_normalize_field(row.get("__row_index", "0")) or "0"),
         )
 
     def to_runner_config(self) -> "RunnerConfig":
@@ -251,17 +287,22 @@ class ScheduleJob:
             profile_path=profile_path,
             title=self.title or "Untitled",
             content=self.content or "",
+            schedule_table=str(self.table_path) if self.table_path else None,
+            schedule_row=self.row_index,
         )
         return RunnerConfig(platform="Medium", medium=medium_cfg)
 
     def resolve_profile_path(self) -> str:
         base = Path(CHROME_USER_DATA_DIR).expanduser()
+        profiles_root = Path(r"D:\TOOL\social-poster\profiles")
         value = (self.profile or "").strip()
         if not value:
             return str(base)
         path = Path(value).expanduser()
         if not path.is_absolute():
-            path = base / value
+            path = profiles_root / value
+        if not str(path).lower().startswith(str(profiles_root).lower()):
+            path = profiles_root / path.name
         return str(path)
 
 
@@ -279,13 +320,22 @@ def _run_single_job(job: ScheduleJob, show_console: bool = False) -> None:
     _log(
         f"INFO:LAUNCH_JOB platform={job.platform} time='{job.schedule_time}' title='{_preview(job.title)}'"
     )
+    publish_url: str | None = None
     for level, message in events:
         _log(f"LOG:{level.upper()} {message}")
+        if level == "success" and "Medium URL:" in message:
+            publish_url = message.split("Medium URL:", 1)[-1].strip()
+    if publish_url and job.table_path and job.row_index:
+        try:
+            write_link_to_schedule(Path(job.table_path), job.row_index, publish_url)
+            _log(
+                f"INFO:LINK_UPDATE row={job.row_index} url='{publish_url}' table='{job.table_path}'"
+            )
+        except Exception as exc:
+            _log(
+                f"WARN:LINK_UPDATE_FAILED row={job.row_index} table='{job.table_path}' err={exc}"
+            )
 
-
-def run_jobs(jobs: List[ScheduleJob], show_console: bool = False) -> None:
-    for job in jobs:
-        _run_single_job(job, show_console=show_console)
 
 
 def _group_jobs_by_profile(jobs: List[ScheduleJob]) -> Dict[str, List[ScheduleJob]]:
@@ -299,8 +349,18 @@ def _group_jobs_by_profile(jobs: List[ScheduleJob]) -> Dict[str, List[ScheduleJo
 
 def _profile_worker(group_id: str, jobs: List[ScheduleJob], show_console: bool) -> None:
     _ensure_process_console(group_id, show_console)
-    _log(f"INFO:PROFILE_WORKER start profile={group_id} jobs={len(jobs)}")
     for job in jobs:
+        _log(
+            "INFO:RUN_JOB "
+            + f"profile={job.profile or 'N/A'} "
+            + f"type={job.type or 'N/A'} "
+            + f"title='{_preview(job.title)}' "
+            + f"content='{_preview(job.content)}' "
+            + f"images='{_preview(job.images)}' "
+            + f"time='{job.schedule_time or 'imm'}' "
+            + f"row={job.row_index} "
+            + f"link='{job.link or ''}'"
+        )
         _run_single_job(job, show_console=show_console)
     _log(f"INFO:PROFILE_WORKER finished profile={group_id}")
 
@@ -317,7 +377,7 @@ def _dispatch_time_slot(
                 processes = alive
                 break
             _log(f"INFO:PROFILE_MANAGER waiting for slot alive={len(alive)}/{limit}")
-            time.sleep(0.5)
+            time.sleep(5)
             processes = alive
         proc = Process(target=_profile_worker, args=(group_id, group_jobs, show_console))
         proc.start()
@@ -334,20 +394,32 @@ def _group_jobs_by_time(jobs: List[ScheduleJob]) -> tuple[List[ScheduleJob], Dic
     scheduled: Dict[datetime, List[ScheduleJob]] = defaultdict(list)
     now = datetime.now()
     for job in jobs:
-        target = _parse_schedule_timestamp(job.schedule_time)
+        target = _parse_schedule_timestamp(job.schedule_time, job.schedule_date)
         if target is None or target <= now:
             immediate.append(job)
         else:
+            delay = max(0.0, (target - now).total_seconds())
+            _log(
+                f"INFO:JOB_SCHEDULE profile={job.profile or 'default'} title='{_preview(job.title)}' target={target:%Y-%m-%d %H:%M:%S} delay={int(delay)}s"
+            )
             scheduled[target].append(job)
     if immediate:
         _log(
-            "INFO:TIME_SLOT_SUMMARY immediate jobs="
-            + ", ".join(f"{job.profile or 'default'}@{job.schedule_time or 'imm'}" for job in immediate)
+            "INFO:DISPATCH_IMMEDIATE "
+            + ", ".join(
+                f"{job.profile or 'default'}@{job.schedule_date or '--'}/{job.schedule_time or 'imm'}"
+                for job in immediate
+            )
         )
     for ts, slot in scheduled.items():
         label = ts.strftime("%Y-%m-%d %H:%M:%S")
-        profiles = ", ".join(job.profile or "default" for job in slot) or "-"
-        _log(f"INFO:TIME_SLOT_SUMMARY label={label} jobs={len(slot)} profiles={profiles}")
+        entries: list[str] = []
+        for job in slot:
+            delay = max(0.0, (ts - now).total_seconds())
+            entries.append(
+                f"{job.profile or 'default'}@{job.schedule_date or '--'}/{job.schedule_time or 'imm'} delay={int(delay)}s"
+            )
+        _log(f"INFO:TIME_SLOT_SCHEDULE label={label} jobs={len(slot)} list=[{'; '.join(entries)}]")
     return immediate, scheduled
 
 
@@ -360,6 +432,54 @@ def _ensure_process_console(group_id: str, enabled: bool) -> None:
         _log(f"WARN:CONSOLE_FAIL profile={group_id} err={exc}")
 
 
+def write_link_to_schedule(table: Path, row_index: int, url: str) -> None:
+    table = table.expanduser()
+    if row_index <= 1:
+        return
+    if table.suffix.lower() in (".xlsx", ".xls"):
+        if load_workbook is None:
+            raise RuntimeError("openpyxl is required to update Excel schedules")
+        wb = load_workbook(table)
+        ws = wb.active
+        headers = [str(cell.value or "").strip() for cell in ws[1]]
+        link_col = None
+        for idx, header in enumerate(headers, start=1):
+            if header.lower() == "link":
+                link_col = idx
+                break
+        if link_col is None:
+            link_col = len(headers) + 1
+            ws.cell(row=1, column=link_col, value="link")
+        ws.cell(row=row_index, column=link_col, value=url)
+        wb.save(table)
+        return
+
+    if not table.exists():
+        raise FileNotFoundError(table)
+    with table.open("r", newline="", encoding="utf-8-sig") as fh:
+        rows = list(csv.reader(fh))
+    if not rows:
+        return
+    header = rows[0]
+    header_lower = [h.strip().lower() for h in header]
+    if "link" in header_lower:
+        link_idx = header_lower.index("link")
+    else:
+        header.append("link")
+        link_idx = len(header) - 1
+        for row in rows[1:]:
+            row.extend([""] * (len(header) - len(row)))
+    while len(rows) < row_index:
+        rows.append([""] * len(header))
+    row = rows[row_index - 1]
+    if len(row) < len(header):
+        row.extend([""] * (len(header) - len(row)))
+    row[link_idx] = url
+    with table.open("w", newline="", encoding="utf-8-sig") as fh:
+        writer = csv.writer(fh)
+        writer.writerows(rows)
+
+
 def main(
     table: Path | None = None,
     limit: int | None = None,
@@ -370,12 +490,15 @@ def main(
     show_console = DEFAULT_SHOW_CONSOLE if show_console is None else show_console
     columns = read_schedule(table)
     jobs = build_jobs(columns)
+    for job in jobs:
+        job.table_path = table
     if not jobs:
         _log("WARN: No jobs found in schedule.")
         return
     immediate_jobs, scheduled_jobs = _group_jobs_by_time(jobs)
-    if immediate_jobs:
-        _dispatch_time_slot("immediate", immediate_jobs, limit, show_console)
+    input("stop a second")
+    # if immediate_jobs:
+    #     _dispatch_time_slot("immediate", immediate_jobs, limit, show_console)
 
     scheduler = sched.scheduler(time.time, time.sleep)
     for target, slot_jobs in sorted(scheduled_jobs.items(), key=lambda item: item[0]):
