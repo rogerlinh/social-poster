@@ -242,7 +242,7 @@ def build_jobs(columns: Dict[str, List[str]]) -> List["ScheduleJob"]:
     _log(f"INFO:BUILD_JOBS total={len(jobs)}")
     for idx, job in enumerate(jobs, start=1):
         _log(
-            f"INFO:JOB_SUMMARY #{idx} platform={job.platform} time='{job.schedule_time or 'imm'}' title='{_preview(job.title)}' content='{_preview(job.content)}'"
+            f"INFO:JOB_SUMMARY #{idx} platform={job.platform} date={(job.schedule_date or 'today')!r} time={(job.schedule_time or 'imm')!r} title='{_preview(job.title)}' content='{_preview(job.content)}'"
         )
     return jobs
 
@@ -282,9 +282,10 @@ class ScheduleJob:
         platform = self.platform or "Medium"
         if platform.lower() != "medium":
             return RunnerConfig(platform=platform)
-        profile_path = self.resolve_profile_path()
+        profile_name = self.profile or "Default"
         medium_cfg = MediumJobConfig(
-            profile_path=profile_path,
+            profile_path=self.resolve_profile_path(),
+            profile_name=profile_name,
             title=self.title or "Untitled",
             content=self.content or "",
             schedule_table=str(self.table_path) if self.table_path else None,
@@ -496,9 +497,9 @@ def main(
         _log("WARN: No jobs found in schedule.")
         return
     immediate_jobs, scheduled_jobs = _group_jobs_by_time(jobs)
-    input("stop a second")
-    # if immediate_jobs:
-    #     _dispatch_time_slot("immediate", immediate_jobs, limit, show_console)
+    # input("stop a second")
+    if immediate_jobs:
+        _dispatch_time_slot("immediate", immediate_jobs, limit, show_console)
 
     scheduler = sched.scheduler(time.time, time.sleep)
     for target, slot_jobs in sorted(scheduled_jobs.items(), key=lambda item: item[0]):

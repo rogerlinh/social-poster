@@ -41,6 +41,7 @@ from selenium.common.exceptions import TimeoutException, WebDriverException
 
 from console_utils import ensure_own_console
 from openWeb import launch_profile_browser, open_debug_then_restart_with_selenium
+from gpm_profile import find_or_create_profile, start_profile, create_profile, start_profile_api
 try:
     from tkhtmlview import HTMLLabel  # type: ignore
 except Exception as exc:  # pragma: no cover - optional dependency
@@ -223,7 +224,6 @@ class Runner(threading.Thread):
                     raise ValueError("Missing Medium configuration")
                 print("Starting Medium publish job...")
                 self._run_medium(self.config.medium)
-                # input("Press Enter to close this console window...")
             elif self.config.platform == "LinkedIn":
                 self.warn(
                     "LinkedIn automation has not been reconstructed yet. "
@@ -235,7 +235,6 @@ class Runner(threading.Thread):
         except Exception as exc:  # pylint: disable=broad-except
             self.error(f"Failure: {exc}")
             print("eXCEPTION in runner:", exc)
-            # input("Press Enter to close this console window...")
             self._put("finished", "Aborted")
 
     def _run_medium(self, cfg: MediumJobConfig) -> None:
@@ -254,30 +253,34 @@ class Runner(threading.Thread):
                 "support headless mode. Proceeding with visible browser window."
             )
 
-        profile_path = Path(cfg.profile_path or "").expanduser()
-        if not profile_path.exists():
-            raise FileNotFoundError(
-                f"Chrome profile folder does not exist: {profile_path}. "
-                "Open the profile via the Profiles tab before running."
-            )
+        profile_name = cfg.profile_name or "Default"
+        _log("Launching Chrome with Medium profile...")
+        _log("Looking for GPM Login profile...")
+        profile = find_or_create_profile(profile_name, create_if_missing=False)
 
-        profile_dir = cfg.profile_name or "Default"
-        profile_dir_path = profile_path / profile_dir
-        if not profile_dir_path.exists():
-            raise FileNotFoundError(
-                f"Chrome profile '{profile_dir}' missing under {profile_path}. "
-                "Open the profile via the Profiles tab before running."
-            )
-
-        self.log("Launching Chrome with Medium profile...")
-        driver = open_debug_then_restart_with_selenium(
-            user_data_dir=str(profile_path),
-            profile_name=profile_dir,
-            chrome_path=str(CHROME_EXECUTABLE_PATH),
+        if profile is None:
+            self.error(f"Profile '{profile_name}' not found. Create it first in GPM Login app.")
+            return
+        
+        profile_id = profile.get('id')
+        _log(f"Using GPM Login profile: {profile_name} (ID: {profile_id})")
+        
+        # Start the profile and get WebDriver
+        _log("Launching Chrome via GPM Login API...")
+        driver = start_profile_api(
+            profile_id=profile_id,
+            win_width=1280,
+            win_height=720,
+            pos_x=300,
+            pos_y=300,
+            retry_attempts=3
         )
-
+        
+        if driver is None:
+            self.error("Failed to launch Chrome via GPM Login API. Please check your GPM Login app.")
+            return
         try:
-            self.log(f"Driver ready. keep_browser_open={fmt_bool(cfg.keep_browser_open)}")
+            _log(f"Driver ready. keep_browser_open={fmt_bool(cfg.keep_browser_open)}")
             if self.stop_evt.is_set():
                 self.warn("Stop requested before navigation.")
                 return
@@ -286,58 +289,35 @@ class Runner(threading.Thread):
                 self._handle_manual_login(driver, cfg)
                 if self.stop_evt.is_set():
                     return
-
-            self.log("Opening Medium new-story page...")
-            try:
-                medium_load_page(driver, MEDIUM_NEW_STORY_URL, attempts=3)
-            except TimeoutException:
-                self.error("Medium refused the connection (ERR_CONNECTION_REFUSED) after three automatic retries.")
-                raise
-            except WebDriverException as exc:
-                if "ERR_CONNECTION_REFUSED" in str(exc):
-                    self.error("Chrome reported ERR_CONNECTION_REFUSED when opening Medium. Check your connection or VPN and try again.")
-                raise
-            time.sleep(2)
-            self.log(
-                "When the editor loads, type the story title manually in Chrome. "
-                "The automation will continue once the Publish button is enabled."
-            )
-
-            tags = cfg.tags[:5]
-            self.log(
-                f"Publishing Medium article | title='{cfg.title[:40]}' | "
-                f"tags={tags if tags else '(none)'}"
-            )
-            print(
-                f"Publishing Medium article | title='{cfg.title[:40]}' | "
-                f"tags={tags if tags else '(none)'}"
-            )
+            driver.get("chrome://version/")
+            time.sleep(1)
             publish_url = medium_publish_article_selenium(
                 driver=driver,
                 title=cfg.title,
                 content=cfg.content,
-                tags=tags,
+                # tags=tags,
                 publish_now=cfg.publish_now,
             )
             print(f"Published URL: {publish_url}")
             if publish_url:
-                self.log(f"Medium publish workflow completed. URL: {publish_url}")
+                _log(f"Medium publish workflow completed. URL: {publish_url}")
                 self._put("success", f"Medium URL: {publish_url}")
                 self._persist_publish_link(cfg, publish_url)
+                return publish_url
             else:
-                self.log("Medium publish workflow is not completed.")
+                _log("Medium publish workflow is not completed.")
         finally:
             if driver is not None:
-                self.log("Closing browser window.")
+                _log("Closing browser window.")
                 try:
                     driver.quit()
                 except Exception:
                     pass
 
     def _handle_manual_login(self, driver, cfg: MediumJobConfig) -> None:
-        self.log("Manual login requested. Opening Medium login page.")
+        _log("Manual login requested. Opening Medium login page.")
         driver.get(MEDIUM_LOGIN_URL)
-        self.log(
+        _log(
             "Please authenticate in Chrome. The automation waits until you close this prompt "
             "or the timeout passes."
         )
@@ -353,7 +333,7 @@ class Runner(threading.Thread):
 
         while not self.stop_evt.is_set():
             if finished():
-                self.log("Detected Medium editor. Proceeding with publish flow.")
+                _log("Detected Medium editor. Proceeding with publish flow.")
                 return
             if (time.monotonic() - start_ts) > timeout:
                 self.warn(
@@ -369,7 +349,7 @@ class Runner(threading.Thread):
             return
         try:
             schedule_reader.write_link_to_schedule(Path(cfg.schedule_table), cfg.schedule_row, url)
-            self.log(f"Updated schedule link row={cfg.schedule_row}")
+            _log(f"Updated schedule link row={cfg.schedule_row}")
         except Exception as exc:
             self.warn(f"Failed to update schedule link row={cfg.schedule_row}: {exc}")
 
@@ -758,26 +738,73 @@ class App(ctk.CTk):
             return [], [], f"Failed to read schedule: {exc}"
         values = columns.get("profile") or columns.get("profile_path") or []
         profiles = sorted({(value or "").strip() for value in values if (value or "").strip()})
-        base = PROFILE_BASE_DIR.expanduser()
+        
+        # Check profiles via GPM Login API instead of file system
         existing: list[tuple[str, Path]] = []
         missing: list[tuple[str, Path]] = []
+        
         for name in profiles:
+            # Check if profile exists in GPM Login API
+            profile = find_or_create_profile(name, create_if_missing=False)
+            base = PROFILE_BASE_DIR.expanduser()
             target = (base / name).expanduser()
-            display = f"{name} -> {target}"
-            if target.exists():
+            display = f"{name} (GPM Login)"
+            
+            if profile is not None:
                 existing.append((display, target))
             else:
                 missing.append((display, target))
+        
         if not profiles:
             message = "No profiles found in schedule."
         else:
-            message = f"{len(existing)} profile(s) exist, {len(missing)} missing."
+            message = f"{len(existing)} profile(s) exist in GPM Login, {len(missing)} missing."
         return existing, missing, message
 
     def _open_profile_browser(self, path: Path) -> None:
+        profile_name = path.name
         try:
-            launch_profile_browser(str(path), str(CHROME_EXECUTABLE_PATH))
-            self.profile_status_var.set(f"Launched Chrome for {path.name}.")
+            # Check if profile exists in GPM Login
+            profile = find_or_create_profile(profile_name, create_if_missing=False)
+            
+            if profile is None:
+                # Profile doesn't exist, ask user to create it
+                response = messagebox.askyesno(
+                    "Profile Not Found",
+                    f"Profile '{profile_name}' does not exist in GPM Login.\n\nDo you want to create it now?"
+                )
+                if response:
+                    self.profile_status_var.set(f"Creating profile '{profile_name}'...")
+                    profile = create_profile(profile_name)
+                    if profile is not None:
+                        self.profile_status_var.set(f"Profile '{profile_name}' created successfully.")
+                        self._refresh_profile_lists()
+                        return
+                    else:
+                        messagebox.showerror("Profile Creation Failed", f"Failed to create profile '{profile_name}'.")
+                        return
+            
+            # Profile exists, start it via GPM Login API
+            profile_id = profile.get('id')
+            self.profile_status_var.set(f"Launching profile '{profile_name}' via GPM Login API...")
+            driver = start_profile(
+                profile_id=profile_id,
+                win_width=1280,
+                win_height=720,
+                pos_x=300,
+                pos_y=300,
+                retry_attempts=3
+            )
+            
+            if driver is not None:
+                self.profile_status_var.set(f"Profile '{profile_name}' launched successfully. Keep browser window open or close to continue.")
+                messagebox.showinfo("Profile Launched", f"Profile '{profile_name}' is now open.\n\nClose the browser window when done.")
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+            else:
+                messagebox.showerror("Launch Failed", f"Failed to launch profile '{profile_name}' via GPM Login API.")
         except Exception as exc:
             messagebox.showerror("Profile Browser", f"Failed to open profile: {exc}")
     def _build_medium_section(self, frame: ctk.CTkFrame) -> None:

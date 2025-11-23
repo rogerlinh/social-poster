@@ -122,7 +122,7 @@ def start_profile(
         driver = webdriver.Chrome(options=options)
 
     driver.set_window_rect(x, y, width, height)
-    _tlog("STEP:START_CHROME profile ready")
+    _log("STEP:START_CHROME profile ready")
     return driver
 
 
@@ -204,7 +204,7 @@ def type_like_user_resilient(driver: webdriver.Chrome, css: str, text: str):
             return
         except StaleElementReferenceException:
             attempts += 1
-            _tlog("WARN:RESILIENT_TYPING_STALE refetch element")
+            _log("WARN:RESILIENT_TYPING_STALE refetch element")
     raise StaleElementReferenceException("Failed to send keys after retries")
 
 
@@ -227,16 +227,27 @@ def handle_popups(driver: webdriver.Chrome):
 
 
 def open_medium_editor(driver: webdriver.Chrome):
-    _tlog("STEP:OPEN_EDITOR GET /new-story")
-    target_url = "https://medium.com/new-story"
-    _load_medium_page(driver, target_url)
+    _log("STEP:OPEN_EDITOR checking if already on /new-story")
+    try:
+        current_url = driver.current_url
+        if "/new-story" in current_url:
+            _log("STEP:OPEN_EDITOR already on /new-story, skipping load")
+        else:
+            _log("STEP:OPEN_EDITOR GET /new-story")
+            target_url = "https://medium.com/new-story"
+            _load_medium_page(driver, target_url)
+    except Exception as e:
+        _log(f"WARN:OPEN_EDITOR_URL_CHECK err={e.__class__.__name__}, proceeding with load")
+        target_url = "https://medium.com/new-story"
+        _load_medium_page(driver, target_url)
+    
     WebDriverWait(driver, WAIT_MED).until(
         EC.presence_of_element_located((By.CSS_SELECTOR, ".postArticle-content"))
     )
     WebDriverWait(driver, WAIT_MED).until(
         EC.presence_of_element_located((By.CSS_SELECTOR, SEL_MEDIUM["publish_btn"]))
     )
-    _tlog("STEP:EDITOR_READY container and publish button located")
+    _log("STEP:EDITOR_READY container and publish button located")
     handle_popups(driver)
 
 
@@ -244,12 +255,14 @@ def _load_medium_page(driver: webdriver.Chrome, url: str, attempts: int = 3) -> 
     last_exc: Exception | None = None
     for attempt in range(1, attempts + 1):
         try:
+            _log(f"STEP:LOAD_MEDIUM attempt={attempt}/{attempts} url={url}")
+            driver.set_page_load_timeout(15)  # Set 15 second timeout for page load
             driver.get(url)
         except WebDriverException as exc:
             last_exc = exc
             msg = str(exc).lower()
             if "err_connection_refused" in msg:
-                _tlog(f"WARN:CONNECTION_REFUSED_GET attempt={attempt}/{attempts} retrying")
+                _log(f"WARN:CONNECTION_REFUSED_GET attempt={attempt}/{attempts} retrying")
                 if attempt < attempts:
                     _sleep(0.6, 1.0)
                     continue
@@ -257,7 +270,7 @@ def _load_medium_page(driver: webdriver.Chrome, url: str, attempts: int = 3) -> 
         _sleep(1.0, 1.4)
         if _is_connection_refused_page(driver):
             last_exc = TimeoutException("Medium connection refused after reload")
-            _tlog(f"WARN:CONNECTION_REFUSED_PAGE attempt={attempt}/{attempts} retrying")
+            _log(f"WARN:CONNECTION_REFUSED_PAGE attempt={attempt}/{attempts} retrying")
             if attempt < attempts:
                 _sleep(0.6, 1.0)
                 continue
@@ -337,7 +350,7 @@ def _element_plain_text(driver: webdriver.Chrome, element) -> str:
 
 
 def fill_title_and_body(driver: webdriver.Chrome, title: str, body: str):
-    _tlog("STEP:RESOLVE_CONTAINER locate section-inner")
+    _log("STEP:RESOLVE_CONTAINER locate section-inner")
     # input("PAUSE after locating section-inner, press any keys to continue...")
     container = _get_container(driver)
     container_scope = [container] if container is not None else None
@@ -404,7 +417,7 @@ def fill_title_and_body(driver: webdriver.Chrome, title: str, body: str):
     except Exception:
         title_id = None
 
-    _tlog("STEP:title_id is " + (title_id or "<unknown>"))
+    _log("STEP:title_id is " + (title_id or "<unknown>"))
 
     body_value = body or DEFAULT_MEDIUM_BODY_HTML
     is_html, prepared_body, _ = _prepare_medium_body_content(body_value, title_input)
@@ -412,10 +425,10 @@ def fill_title_and_body(driver: webdriver.Chrome, title: str, body: str):
     body_source = prepared_body if prepared_body else body_value
     body_blob = render_medium_body_text(body_source, title_input)
     body_line_count = body_blob.count("\n") + (1 if body_blob else 0)
-    _tlog(
+    _log(
         f"INFO:BODY_RICH_TEXT rendered chars={len(body_blob)} lines={body_line_count}"
     )
-    _tlog(f"INFO:BODY_RICH_TEXT_CONTENT {body_blob!r}")
+    _log(f"INFO:BODY_RICH_TEXT_CONTENT {body_blob!r}")
 
     try:
         if _type_body_plain(
@@ -426,10 +439,10 @@ def fill_title_and_body(driver: webdriver.Chrome, title: str, body: str):
             title_id=title_id,
             rich_html=prepared_body if is_html else None,
         ):
-            _tlog("STEP:BODY_TYPED_PLAIN simple typing path completed")
+            _log("STEP:BODY_TYPED_PLAIN simple typing path completed")
             _click_optional_ok_button(driver)
     except Exception as e:
-        _tlog(f"ERROR:BODY_TYPE exception {e}")
+        _log(f"ERROR:BODY_TYPE exception {e}")
     # input("PAUSE after body filled, press any keys to continue...")
 
     
@@ -455,10 +468,10 @@ def _click_optional_ok_button(driver: webdriver.Chrome, timeout: float = 5.0) ->
     try:
         button = WebDriverWait(driver, timeout).until(lambda d: _find_button(d))
     except Exception:
-        _tlog("INFO:BODY_OPTIONAL_OK not found or timeout")
+        _log("INFO:BODY_OPTIONAL_OK not found or timeout")
         return
     if not button:
-        _tlog("INFO:BODY_OPTIONAL_OK not found")
+        _log("INFO:BODY_OPTIONAL_OK not found")
         return
     try:
         button.click()
@@ -466,9 +479,9 @@ def _click_optional_ok_button(driver: webdriver.Chrome, timeout: float = 5.0) ->
         try:
             driver.execute_script("arguments[0].click();", button)
         except Exception as exc:
-            _tlog(f"WARN:BODY_OPTIONAL_OK click failed err={exc.__class__.__name__}")
+            _log(f"WARN:BODY_OPTIONAL_OK click failed err={exc.__class__.__name__}")
             return
-    _tlog("INFO:BODY_OPTIONAL_OK dismissed overlay")
+    _log("INFO:BODY_OPTIONAL_OK dismissed overlay")
 
 
 def _publish_dialog_scopes(driver: webdriver.Chrome):
@@ -753,14 +766,14 @@ def _prepare_medium_body_content(raw_body: str, title_hint: str | None = None) -
         return False, "", False
     is_medium_markup = _looks_like_medium_editor_markup(body)
     if _is_full_html_document(body):
-        _tlog("INFO:BODY_HTML_FULLDOC detected full HTML document, sanitizing")
+        _log("INFO:BODY_HTML_FULLDOC detected full HTML document, sanitizing")
         fragment = _extract_document_body(body)
         fragment = _extract_medium_editable_inner(fragment)
         if not is_medium_markup:
             is_medium_markup = _looks_like_medium_editor_markup(fragment)
         sanitized = _sanitize_medium_html(fragment, preserve_medium_markup=False)
         if sanitized and _looks_like_rich_html(sanitized):
-            _tlog("INFO:BODY_HTML_CONVERT_DISABLED using sanitized document body")
+            _log("INFO:BODY_HTML_CONVERT_DISABLED using sanitized document body")
             return True, sanitized, False
         return False, _html_to_plain_text(fragment), False
     if _looks_like_rich_html(body):
@@ -769,7 +782,7 @@ def _prepare_medium_body_content(raw_body: str, title_hint: str | None = None) -
             preserve_medium_markup=False,
         )
         if sanitized and _looks_like_rich_html(sanitized):
-            _tlog("INFO:BODY_HTML_CONVERT_DISABLED using sanitized fragment body")
+            _log("INFO:BODY_HTML_CONVERT_DISABLED using sanitized fragment body")
             return True, sanitized, False
         return False, _html_to_plain_text(body), False
     return False, body, False
@@ -1018,20 +1031,20 @@ def _type_body_plain(
         text_blob = str(lines or "")
 
     if not text_blob:
-        _tlog("WARN:BODY_TYPE empty body input")
+        _log("WARN:BODY_TYPE empty body input")
         return True
 
     text_blob = text_blob.replace("\r\n", "\n").replace("\r", "\n")
     line_count = text_blob.count("\n") + (0 if text_blob.endswith("\n") else 1)
-    _tlog(
+    _log(
         f"STEP:BODY_TYPE_PLAIN lines={line_count} selectors={selectors_list}"
     )
-    _tlog(f"DEBUG:BODY_TYPE text_blob={text_blob}")
+    _log(f"DEBUG:BODY_TYPE text_blob={text_blob}")
 
     def _acquire_body_element(existing=None, phase="locate"):
         body_candidate = existing
         for attempt in range(1, 4):
-            _tlog(f"STEP:BODY_TYPE {phase} attempt={attempt}")
+            _log(f"STEP:BODY_TYPE {phase} attempt={attempt}")
             if body_candidate is None:
                 try:
                     body_candidate = _locate_by_selectors(
@@ -1041,30 +1054,30 @@ def _type_body_plain(
                         scopes=container_scope,
                     )
                 except Exception as exc:
-                    _tlog(
+                    _log(
                         f"WARN:BODY_TYPE {phase} locate error attempt={attempt} err={exc.__class__.__name__}: {exc}"
                     )
                     body_candidate = None
                 if not body_candidate:
-                    _tlog("WARN:BODY_TYPE no candidate element found")
+                    _log("WARN:BODY_TYPE no candidate element found")
                     _sleep(0.05, 0.1)
                     continue
             body_candidate = _resolve_medium_body_typing_node(driver, body_candidate)
             if body_candidate is None:
-                _tlog("WARN:BODY_TYPE resolved typing node is None")
+                _log("WARN:BODY_TYPE resolved typing node is None")
                 _sleep(0.05, 0.1)
                 continue
             try:
                 body_candidate.click()
             except Exception as exc:
-                _tlog(f"WARN:BODY_TYPE click failed err={exc.__class__.__name__}")
+                _log(f"WARN:BODY_TYPE click failed err={exc.__class__.__name__}")
                 try:
                     driver.execute_script(
                         "arguments[0].scrollIntoView({block: 'center'}); arguments[0].click();",
                         body_candidate,
                     )
                 except Exception as js_exc:
-                    _tlog(
+                    _log(
                         f"WARN:BODY_TYPE js click failed err={js_exc.__class__.__name__}"
                     )
                     body_candidate = None
@@ -1076,46 +1089,46 @@ def _type_body_plain(
             else:
                 body_candidate = _resolve_medium_body_typing_node(driver, body_candidate)
             if body_candidate is None:
-                _tlog("WARN:BODY_TYPE active element unusable after focus")
+                _log("WARN:BODY_TYPE active element unusable after focus")
                 _sleep(0.05, 0.1)
                 continue
-            _tlog(f"STEP:BODY_TYPE focused element {_describe_element(body_candidate)}")
+            _log(f"STEP:BODY_TYPE focused element {_describe_element(body_candidate)}")
             return body_candidate
         return None
 
     body_el = _acquire_body_element()
 
     if body_el is None:
-        _tlog("ERROR:BODY_TYPE failed to acquire body element after retries")
+        _log("ERROR:BODY_TYPE failed to acquire body element after retries")
         return False
     
     clipboard_ok = False
     if _clipboard_copy_content(driver, text_blob, rich_html):
         clipboard_ok = _paste_from_clipboard_into_element(driver, body_el)
         if clipboard_ok:
-            _tlog("STEP:BODY_TYPE clipboard paste succeeded")
+            _log("STEP:BODY_TYPE clipboard paste succeeded")
             return True
-        _tlog("WARN:BODY_TYPE clipboard paste failed after copy")
+        _log("WARN:BODY_TYPE clipboard paste failed after copy")
     return False
     # debug_path = Path("temp_medium_body.txt")
     # try:
     #     debug_path.write_text(text_blob, encoding="utf-8")
-    #     _tlog(
+    #     _log(
     #         f"INFO:BODY_TYPE saved_body_debug file={debug_path.name} lines={line_count} path={debug_path.resolve()}"
     #     )
     # except Exception as exc:
-    #     _tlog(f"WARN:BODY_TYPE save_debug_failed err={exc.__class__.__name__}")
+    #     _log(f"WARN:BODY_TYPE save_debug_failed err={exc.__class__.__name__}")
 
     # for attempt in range(1, 4):
     #     try:
     #         body_el.send_keys(text_blob)
     #         break
     #     except StaleElementReferenceException as stale_exc:
-    #         _tlog(
+    #         _log(
     #             f"WARN:BODY_TYPE stale element during paste attempt={attempt} err={stale_exc.__class__.__name__}"
     #         )
     #     except Exception as type_exc:
-    #         _tlog(
+    #         _log(
     #             f"ERROR:BODY_TYPE paste failed attempt={attempt} err={type_exc.__class__.__name__}"
     #         )
     #         raise
@@ -1123,7 +1136,7 @@ def _type_body_plain(
     #     if attempt < 3:
     #         body_el = _acquire_body_element(phase="reacquire")
     #         if body_el is None:
-    #             _tlog(
+    #             _log(
     #                 "ERROR:BODY_TYPE unable to reacquire body element during paste retry"
     #             )
     #             raise
@@ -1253,12 +1266,12 @@ def _medium_blocks_from_fragment(fragment: str) -> list[dict[str, Any]]:
     try:
         root = ET.fromstring(f"<root>{fragment}</root>")
     except ET.ParseError:
-        _tlog("WARN:BODY_HTML_PARSE_ERROR fragment could not be parsed as XML")
+        _log("WARN:BODY_HTML_PARSE_ERROR fragment could not be parsed as XML")
         try:
             Path("temp_block.txt").write_text(fragment, encoding="utf-8")
-            _tlog(f"INFO:BODY_HTML_DEBUG_WRITTEN path=temp_block.txt size={len(fragment)}")
+            _log(f"INFO:BODY_HTML_DEBUG_WRITTEN path=temp_block.txt size={len(fragment)}")
         except Exception as exc:
-            _tlog(f"WARN:BODY_HTML_DEBUG_WRITE_FAIL err={exc.__class__.__name__}")
+            _log(f"WARN:BODY_HTML_DEBUG_WRITE_FAIL err={exc.__class__.__name__}")
         return []
     blocks: list[dict[str, Any]] = []
     if root.text and root.text.strip():
@@ -1410,7 +1423,7 @@ def _convert_sanitized_html_to_medium_markup(fragment: str, title_hint: str | No
     blocks = _medium_blocks_from_fragment(fragment)
     if not blocks:
         if fragment.strip():
-            _tlog("WARN:BODY_HTML_CONVERT_NO_BLOCKS despite non-empty fragment")
+            _log("WARN:BODY_HTML_CONVERT_NO_BLOCKS despite non-empty fragment")
         return None
     working_blocks = [dict(block) for block in blocks]
     title_html: Optional[str] = None
@@ -1468,9 +1481,9 @@ def _convert_sanitized_html_to_medium_markup(fragment: str, title_hint: str | No
     try:
         debug_path = Path("temp_block_medium.html")
         debug_path.write_text(section_html, encoding="utf-8")
-        _tlog(f"INFO:BODY_HTML_DEBUG_MEDIUM path={debug_path} bytes={debug_path.stat().st_size}")
+        _log(f"INFO:BODY_HTML_DEBUG_MEDIUM path={debug_path} bytes={debug_path.stat().st_size}")
     except Exception as exc:
-        _tlog(f"WARN:BODY_HTML_DEBUG_MEDIUM_FAIL err={exc.__class__.__name__}")
+        _log(f"WARN:BODY_HTML_DEBUG_MEDIUM_FAIL err={exc.__class__.__name__}")
     return section_html
 
 
@@ -1787,9 +1800,9 @@ def _paste_medium_html_via_clipboard(
 ) -> bool:
     target, root = _resolve_medium_body_target(driver, hint)
     if not target or not root:
-        _tlog("WARN:BODY_CLIPBOARD_TARGET_NOT_FOUND")
+        _log("WARN:BODY_CLIPBOARD_TARGET_NOT_FOUND")
         return False
-    _tlog("INFO:BODY_CLIPBOARD_PASTE attempt via ActionChains")
+    _log("INFO:BODY_CLIPBOARD_PASTE attempt via ActionChains")
     try:
         actions = webdriver.ActionChains(driver)
         actions.move_to_element(target)
@@ -1820,14 +1833,14 @@ def _paste_medium_html_via_clipboard(
         pass
     _sleep(0.05, 0.1)
     if not _copy_html_to_clipboard(driver, html):
-        _tlog("WARN:BODY_CLIPBOARD_COPY_FAILED")
+        _log("WARN:BODY_CLIPBOARD_COPY_FAILED")
         return False
     _sleep(0.05, 0.1)
     try:
         actions = webdriver.ActionChains(driver)
         actions.key_down(Keys.CONTROL).send_keys("v").key_up(Keys.CONTROL).perform()
     except Exception:
-        _tlog("WARN:BODY_CLIPBOARD_PASTE_KEYSEQ_FAILED")
+        _log("WARN:BODY_CLIPBOARD_PASTE_KEYSEQ_FAILED")
         return False
     _sleep(0.25, 0.35)
     try:
@@ -1836,7 +1849,7 @@ def _paste_medium_html_via_clipboard(
         inner_html = ""
     cleaned_inner = re.sub(r"\s+", "", inner_html)
     if not cleaned_inner or cleaned_inner in {"", "<p><br></p>", "<p></p>"}:
-        _tlog("WARN:BODY_CLIPBOARD_EMPTY_AFTER_PASTE")
+        _log("WARN:BODY_CLIPBOARD_EMPTY_AFTER_PASTE")
         return False
     try:
         driver.execute_script(
@@ -1851,7 +1864,7 @@ def _paste_medium_html_via_clipboard(
         )
     except Exception:
         pass
-    _tlog("INFO:BODY_CLIPBOARD_PASTE success")
+    _log("INFO:BODY_CLIPBOARD_PASTE success")
     return True
 
 
@@ -1884,12 +1897,12 @@ def _copy_text_to_clipboard(driver: webdriver.Chrome, text: str) -> bool:
 def _clipboard_copy_content(driver: webdriver.Chrome, text: str, rich_html: str | None) -> bool:
     if rich_html:
         if _copy_html_to_clipboard(driver, rich_html):
-            _tlog("INFO:BODY_CLIPBOARD copied rich HTML payload")
+            _log("INFO:BODY_CLIPBOARD copied rich HTML payload")
             return True
-        _tlog("WARN:BODY_CLIPBOARD rich HTML copy failed, falling back to text")
+        _log("WARN:BODY_CLIPBOARD rich HTML copy failed, falling back to text")
     if text:
         if _copy_text_to_clipboard(driver, text):
-            _tlog("INFO:BODY_CLIPBOARD copied plain text payload")
+            _log("INFO:BODY_CLIPBOARD copied plain text payload")
             return True
     return False
 
@@ -2019,17 +2032,17 @@ def _add_medium_tag(driver: webdriver.Chrome, tag_text: str, existing: list[str]
         return existing
     tag_lower = tag.lower()
     if tag_lower in (existing or []):
-        _tlog(f"INFO:TAG_SKIP_ALREADY_SET tag={tag}")
+        _log(f"INFO:TAG_SKIP_ALREADY_SET tag={tag}")
         return existing
 
     tag_selectors = _as_selector_list(SEL_MEDIUM["tags_input"])
     if not tag_selectors:
-        _tlog("WARN:TAGS_SELECTOR_EMPTY")
+        _log("WARN:TAGS_SELECTOR_EMPTY")
         return existing or []
 
     tag_input = _locate_by_selectors(driver, tag_selectors, scopes=scopes)
     if not tag_input:
-        _tlog("WARN:TAG_INPUT_NOT_FOUND")
+        _log("WARN:TAG_INPUT_NOT_FOUND")
         return existing or []
 
     tag_field = _resolve_tag_input_field(driver, tag_input) or tag_input
@@ -2040,9 +2053,9 @@ def _add_medium_tag(driver: webdriver.Chrome, tag_text: str, existing: list[str]
             "role": tag_field.get_attribute("role"),
             "contenteditable": tag_field.get_attribute("contenteditable"),
         }
-        _tlog(f"INFO:TAG_FIELD attrs={attrs}")
+        _log(f"INFO:TAG_FIELD attrs={attrs}")
     except Exception:
-        _tlog("INFO:TAG_FIELD attrs=<unavailable>")
+        _log("INFO:TAG_FIELD attrs=<unavailable>")
 
     try:
         click_element_like_original(driver, tag_field)
@@ -2050,7 +2063,7 @@ def _add_medium_tag(driver: webdriver.Chrome, tag_text: str, existing: list[str]
         try:
             driver.execute_script("arguments[0].focus();", tag_field)
         except Exception:
-            _tlog("WARN:TAG_INPUT_FOCUS_FAIL")
+            _log("WARN:TAG_INPUT_FOCUS_FAIL")
             return existing or []
 
     _clear_tag_input(driver, tag_field)
@@ -2058,10 +2071,10 @@ def _add_medium_tag(driver: webdriver.Chrome, tag_text: str, existing: list[str]
     typed = False
     for attempt in range(2):
         try:
-            _tlog(f"INFO:TAG_TYPE attempt={attempt+1} tag='{tag}'")
+            _log(f"INFO:TAG_TYPE attempt={attempt+1} tag='{tag}'")
             _type_tag_characters(tag_field, tag)
             typed = True
-            _tlog(f"INFO:TAG_TYPED tag='{tag}' via keystrokes")
+            _log(f"INFO:TAG_TYPED tag='{tag}' via keystrokes")
             break
         except Exception:
             _sleep(0.05, 0.1)
@@ -2080,17 +2093,17 @@ def _add_medium_tag(driver: webdriver.Chrome, tag_text: str, existing: list[str]
                     tag,
                 )
                 typed = True
-                _tlog(f"INFO:TAG_TYPED tag='{tag}' via script fallback")
+                _log(f"INFO:TAG_TYPED tag='{tag}' via script fallback")
                 break
             except Exception as exc:
                 if attempt == 1:
-                    _tlog(f"WARN:TAG_TYPE_FAILED err={exc.__class__.__name__}")
+                    _log(f"WARN:TAG_TYPE_FAILED err={exc.__class__.__name__}")
     if not typed:
         return existing or []
 
     _sleep(0.05, 0.12)
     if not _confirm_tag_with_comma(driver, tag_field):
-        _tlog(f"WARN:TAG_COMMA_FAILED tag={tag}")
+        _log(f"WARN:TAG_COMMA_FAILED tag={tag}")
 
     def _chip_added(drv: webdriver.Chrome):
         tags_now = _current_medium_tags(drv, tag_field)
@@ -2099,11 +2112,11 @@ def _add_medium_tag(driver: webdriver.Chrome, tag_text: str, existing: list[str]
     try:
         WebDriverWait(driver, WAIT_SHORT).until(_chip_added)
     except TimeoutException:
-        _tlog(f"WARN:TAG_ADD_TIMEOUT tag={tag}")
+        _log(f"WARN:TAG_ADD_TIMEOUT tag={tag}")
 
     updated = _current_medium_tags(driver, tag_field)
     if tag_lower in updated:
-        _tlog(f"INFO:TAG_ADDED '{tag}'")
+        _log(f"INFO:TAG_ADDED '{tag}'")
     return updated if updated else existing or []
 
 
@@ -2174,10 +2187,10 @@ def _detect_publish_quota_block(driver: webdriver.Chrome, timeout: float = 5.0) 
             except Exception:
                 continue
             if warning_text.lower() in text.lower():
-                _tlog("ERROR:PUBLISH_LIMIT Medium báo đã đạt giới hạn 3 bài/24h")
+                _log("ERROR:PUBLISH_LIMIT Medium báo đã đạt giới hạn 3 bài/24h")
                 return True
         _sleep(0.2, 0.4)
-    _tlog("INFO:PUBLISH_LIMIT không thấy cảnh báo giới hạn publish")
+    _log("INFO:PUBLISH_LIMIT không thấy cảnh báo giới hạn publish")
     return False
 
 
@@ -2253,10 +2266,10 @@ def _wait_publish_ready(driver: webdriver.Chrome, timeout: int = 20, require_bod
 
     try:
         WebDriverWait(driver, timeout).until(_condition)
-        _tlog("INFO:PUBLISH_READY button enabled and draft saved")
+        _log("INFO:PUBLISH_READY button enabled and draft saved")
         return True
     except TimeoutException:
-        _tlog("WARN:PUBLISH_READY_TIMEOUT button still disabled")
+        _log("WARN:PUBLISH_READY_TIMEOUT button still disabled")
         return False
 
 
@@ -2271,11 +2284,11 @@ def click_publish_confirm_button(driver: webdriver.Chrome) -> bool:
             lambda d: d.find_element(By.XPATH, publish_xpath)
         )
     except Exception:
-        _tlog("WARN:PUBLISH_CONFIRM không tìm thấy nút Publish now")
+        _log("WARN:PUBLISH_CONFIRM không tìm thấy nút Publish now")
         return False
     try:
         button.click()
-        _tlog("STEP:PUBLISH_CONFIRM click trực tiếp")
+        _log("STEP:PUBLISH_CONFIRM click trực tiếp")
         return True
     except Exception:
         pass
@@ -2295,23 +2308,23 @@ def click_publish_confirm_button(driver: webdriver.Chrome) -> bool:
             """,
             button,
         )
-        _tlog("STEP:PUBLISH_CONFIRM click bằng JavaScript")
+        _log("STEP:PUBLISH_CONFIRM click bằng JavaScript")
         return True
     except Exception as exc:
-        _tlog(f"WARN:PUBLISH_CONFIRM click thất bại err={exc.__class__.__name__}")
+        _log(f"WARN:PUBLISH_CONFIRM click thất bại err={exc.__class__.__name__}")
         return False
 
 def open_publish_and_fill(driver: webdriver.Chrome, tags: Iterable[str] | None, publish_now: bool = True):
     try:
         btn = wait_vis(driver, By.CSS_SELECTOR, SEL_MEDIUM["publish_btn"], t=WAIT_MED)
         click_element_like_original(driver, btn)
-        _tlog("STEP:OPEN_PUBLISH dialog launched")
+        _log("STEP:OPEN_PUBLISH dialog launched")
     except Exception:
         pass
     _sleep(0.2, 0.5)
 
     if tags:
-        _tlog("INFO:TAGS_SKIP skipping tag input per updated automation")
+        _log("INFO:TAGS_SKIP skipping tag input per updated automation")
 
     if publish_now:
 
@@ -2362,18 +2375,18 @@ def open_publish_and_fill(driver: webdriver.Chrome, tags: Iterable[str] | None, 
                 if click_publish_confirm_button(driver):
                     return True
                 _sleep(0.2, 0.4)
-            _tlog(f"WARN:PUBLISH_BUTTON_NOT_FOUND attempt={attempt}")
+            _log(f"WARN:PUBLISH_BUTTON_NOT_FOUND attempt={attempt}")
             return False
 
         if _click_publish_once(1, WAIT_MED):
             if not _wait_publish_dialog_close(timeout=6.0):
-                _tlog("WARN:PUBLISH_DIALOG_STILL_OPEN retrying confirm button")
+                _log("WARN:PUBLISH_DIALOG_STILL_OPEN retrying confirm button")
                 _sleep(0.35, 0.6)
                 if _click_publish_once(2, WAIT_SHORT):
                     if not _wait_publish_dialog_close(timeout=6.0):
-                        _tlog("WARN:PUBLISH_DIALOG_PERSIST after second attempt")
+                        _log("WARN:PUBLISH_DIALOG_PERSIST after second attempt")
                 else:
-                    _tlog("WARN:PUBLISH_SECOND_ATTEMPT_FAILED publish dialog may still be open")
+                    _log("WARN:PUBLISH_SECOND_ATTEMPT_FAILED publish dialog may still be open")
 
 
 def medium_publish_article_selenium(
@@ -2386,29 +2399,33 @@ def medium_publish_article_selenium(
 ):
     # input("STEP:COMPLETE publishing flow finished Press Enter to continue...")
     last_exc = None
-    attempts = retries + 1
-    for attempt in range(1, attempts + 1):
-        _tlog(f"STEP:ATTEMPT {attempt}/{attempts}")
-        try:
-            open_medium_editor(driver)
-            fill_title_and_body(driver, title, content)
-            _wait_publish_ready(driver)
-            open_publish_and_fill(driver, tags, publish_now)
-            click_publish_confirm_button(driver)
-            if _detect_publish_quota_block(driver):
-                raise RuntimeError("Medium publish quota exceeded (3 posts per 24 hours).")
-            publish_url = None
-            publish_url = _await_publish_url(driver, timeout=10)
-            _tlog(f"STEP:COMPLETE publishing flow finished url={publish_url}")
-            input("STEP:COMPLETE publishing flow finished Press Enter to continue...")
-            return publish_url
-        except Exception as e:
-            last_exc = e
-            _tlog(f"WARN:PUBLISH_ATTEMPT_FAILED attempt={attempt} err={e.__class__.__name__}")
-            raise e
+    try:
+        _log("STEP:PUBLISH_START opening Medium editor")
+        open_medium_editor(driver)
+        _log("STEP:PUBLISH_EDITOR_OPEN filling title and body")
+        fill_title_and_body(driver, title, content)
+        _log("STEP:PUBLISH_BODY_FILLED waiting for publish button to be ready")
+        _wait_publish_ready(driver)
+        _log("STEP:PUBLISH_READY opening publish dialog and filling details")
+        open_publish_and_fill(driver, tags, publish_now)
+        _log("STEP:PUBLISH_DIALOG_FILLED clicking publish confirm button")
+        click_publish_confirm_button(driver)
+        _log("STEP:PUBLISH_CLICKED checking for publish quota block")
+        if _detect_publish_quota_block(driver):
+            _log("ERROR:PUBLISH_QUOTA Medium publish quota exceeded (3 posts per 24 hours)")
+            raise RuntimeError("Medium publish quota exceeded (3 posts per 24 hours).")
+        _log("STEP:PUBLISH_QUOTA_OK waiting for publish URL")
+        publish_url = None
+        publish_url = _await_publish_url(driver, timeout=10)
+        _log(f"STEP:COMPLETE publishing flow finished url={publish_url}")
+        return publish_url
+    except Exception as e:
+        last_exc = e
+        _log(f"WARN:PUBLISH_ATTEMPT_FAILED  err={e.__class__.__name__}")
+        raise e
     return None
 
-def _tlog(message: str) -> None:
+def _log(message: str) -> None:
     caller = inspect.currentframe().f_back  # type: ignore[assignment]
     line = caller.f_lineno if caller else -1
     pid = os.getpid()
@@ -2445,7 +2462,7 @@ def _paste_from_clipboard_into_element(driver: webdriver.Chrome, element, ensure
         actions = webdriver.ActionChains(driver)
         actions.key_down(Keys.CONTROL).send_keys("v").key_up(Keys.CONTROL).perform()
     except Exception:
-        _tlog("WARN:BODY_CLIPBOARD paste key sequence failed")
+        _log("WARN:BODY_CLIPBOARD paste key sequence failed")
         return False
     _sleep(0.2, 0.3)
     return True
